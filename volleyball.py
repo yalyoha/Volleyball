@@ -31,7 +31,7 @@ def _s(v: float) -> int:
 
 GROUND_Y = _s(520)         # top of the sand where slimes stand
 NET_X = WIDTH // 2
-NET_TOP_Y = _s(300)
+NET_TOP_Y = _s(356)        # net top Y — reduced net height by 20% for more dynamic rallies
 NET_WIDTH = _s(6)
 
 SLIME_W = _s(160)          # visual body width — wide flat dome, 4:1 ratio
@@ -289,7 +289,14 @@ def ai_input(state: AIState, slime: Slime, ball: Ball, difficulty: str, now_ms: 
     own_side = (bx >= NET_X) if is_right else (bx <= NET_X)
 
     if own_side:
-        target = _predict_ball_x_at(GROUND_FOOT_Y, bx, by, bvx, bvy)
+        predicted_x = _predict_ball_x_at(GROUND_FOOT_Y, bx, by, bvx, bvy)
+        # Smash offset — stand on our OWN-BACK side of the ball so contact
+        # lands on the net-facing flank of the dome and the ball reflects
+        # toward the opponent instead of straight up. Without this the AI
+        # juggles the ball vertically on its own side forever.
+        side_away_from_net = 1.0 if is_right else -1.0
+        smash_offset = SLIME_W * 0.28 * side_away_from_net
+        target = predicted_x + smash_offset
     else:
         # Ready position — a bit off-center on own half
         target = NET_X + (NET_X * 0.55 if is_right else -NET_X * 0.55)
