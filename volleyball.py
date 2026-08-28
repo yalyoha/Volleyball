@@ -168,8 +168,10 @@ class Ball:
     vy: float = 0.0
     spin: float = 0.0               # visual rotation, radians
     frozen: bool = True             # true during serve delay
+    prev_x: float = WIDTH * 0.25    # x at start of the current physics step (for swept net collision)
 
     def update(self, dt: float) -> None:
+        self.prev_x = self.x
         if self.frozen:
             return
         self.vy += GRAVITY * dt
@@ -808,6 +810,22 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     boost = 50.0 * SCALE
     ball.vx = (rvx + slime.vx) * BALL_HIT_BOOST + nx * boost
     ball.vy = (rvy + slime.vy) * BALL_HIT_BOOST + ny * boost
+
+    # Never let a slime hit place the ball on the far side of the net band —
+    # otherwise the next frame's swept check has no chance to catch it and
+    # the ball tunnels through the net.
+    if slime.x < NET_X:
+        limit = NET_X - NET_WIDTH // 2 - BALL_R
+        if ball.x > limit:
+            ball.x = limit
+            if ball.vx > 0:
+                ball.vx = -ball.vx * BALL_BOUNCE_DAMP
+    elif slime.x > NET_X:
+        limit = NET_X + NET_WIDTH // 2 + BALL_R
+        if ball.x < limit:
+            ball.x = limit
+            if ball.vx < 0:
+                ball.vx = -ball.vx * BALL_BOUNCE_DAMP
     return True
 
 
@@ -824,22 +842,25 @@ def resolve_ball_walls_and_net(ball: Ball) -> None:
         ball.y = BALL_R
         ball.vy = abs(ball.vy) * BALL_BOUNCE_DAMP
 
-    # Net: pole rectangle (post) with a rounded top cap
+    # Net: pole rectangle (post) with a rounded top cap.
+    # Swept side-collision using prev_x — determines which side the ball
+    # came from, so it bounces back correctly even if velocity direction
+    # disagrees with position (e.g., ball crossed NET_X within one step).
     post_left = NET_X - NET_WIDTH // 2 - BALL_R
     post_right = NET_X + NET_WIDTH // 2 + BALL_R
-    if ball.y > NET_TOP_Y and post_left < ball.x < post_right:
-        # Side collision — push out horizontally
-        if ball.vx > 0 and ball.x < NET_X:
-            ball.x = post_left
-            ball.vx = -abs(ball.vx) * BALL_BOUNCE_DAMP
-        elif ball.vx < 0 and ball.x > NET_X:
-            ball.x = post_right
-            ball.vx = abs(ball.vx) * BALL_BOUNCE_DAMP
-        else:
-            # Moving vertically along the net — nudge sideways
-            side = -1 if ball.x < NET_X else 1
-            ball.x += side * 2
-            ball.vx = side * max(80.0, abs(ball.vx)) * BALL_BOUNCE_DAMP
+    if ball.y > NET_TOP_Y:
+        inside_now = post_left < ball.x < post_right
+        crossed_lr = ball.prev_x <= post_left and ball.x >= post_right
+        crossed_rl = ball.prev_x >= post_right and ball.x <= post_left
+        if inside_now or crossed_lr or crossed_rl:
+            # Choose the side based on where the ball came from, not on vx
+            came_from_left = ball.prev_x <= NET_X
+            if came_from_left:
+                ball.x = post_left
+                ball.vx = -abs(ball.vx) * BALL_BOUNCE_DAMP
+            else:
+                ball.x = post_right
+                ball.vx = abs(ball.vx) * BALL_BOUNCE_DAMP
     # Net cap
     dx = ball.x - NET_X
     dy = ball.y - NET_TOP_Y
