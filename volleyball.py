@@ -44,6 +44,15 @@ JUMP_VELOCITY = -720.0 * SCALE
 BALL_MAX_SPEED = 1100.0 * SCALE
 BALL_BOUNCE_DAMP = 0.95
 BALL_HIT_BOOST = 1.08
+
+# Jelly slime deformation — soft style: ±15% amplitude cap, ~0.3s return time,
+# mild single overshoot. Squish > 0 means squashed (wider, shorter dome).
+SQUISH_CAP = 0.15
+SQUISH_K = 400.0                        # spring stiffness (ω ≈ 20 rad/s)
+SQUISH_C = 16.0                         # damping (ζ ≈ 0.4 — light bounce)
+SQUISH_JUMP = 0.10                      # anticipation stretch on jump
+SQUISH_PER_LAND_VY = 1.2e-4             # squash per unit of landing vy
+SQUISH_PER_HIT_DOT = 1.5e-4             # squash per unit of ball impact normal speed
 # Tournament ladder:
 # BALLS_PER_GAME balls per game → 1 big star,
 # STARS_PER_MATCH big stars per match → 1 small star,
@@ -143,21 +152,36 @@ class Slime:
     vx: float = 0.0
     vy: float = 0.0
     on_ground: bool = True
+    # Jelly deformation. squish > 0 = squashed (wider, shorter),
+    # squish < 0 = stretched (narrower, taller). Springs back to 0 in update().
+    squish: float = 0.0
+    squish_v: float = 0.0
 
     def update(self, dt: float, move: float, jump_pressed: bool) -> None:
         self.vx = move * MOVE_SPEED
         if jump_pressed and self.on_ground:
             self.vy = JUMP_VELOCITY
             self.on_ground = False
+            self.squish = -SQUISH_JUMP        # anticipation stretch
+            self.squish_v = 0.0
         self.vy += GRAVITY * dt
         self.x += self.vx * dt
         self.y += self.vy * dt
         if self.y >= GROUND_FOOT_Y:
+            landing_vy = self.vy
             self.y = GROUND_FOOT_Y
             self.vy = 0.0
-            self.on_ground = True
+            if not self.on_ground:
+                self.on_ground = True
+                self.squish += min(SQUISH_CAP, max(0.0, landing_vy * SQUISH_PER_LAND_VY))
         half_w = SLIME_W / 2
         self.x = max(self.left_bound + half_w, min(self.right_bound - half_w, self.x))
+
+        # Damped spring pulling squish back to 0
+        self.squish_v += (-SQUISH_K * self.squish - SQUISH_C * self.squish_v) * dt
+        self.squish   += self.squish_v * dt
+        if self.squish >  SQUISH_CAP: self.squish =  SQUISH_CAP; self.squish_v = 0.0
+        if self.squish < -SQUISH_CAP: self.squish = -SQUISH_CAP; self.squish_v = 0.0
 
 
 @dataclass
@@ -416,8 +440,14 @@ def _get_slime_sprite(color: tuple) -> pygame.Surface:
 
 
 def draw_slime(surface: pygame.Surface, slime: Slime) -> None:
-    """Flat dome from Slime.svg — cached supersampled sprite for smooth edges."""
+    """Flat dome from Slime.svg — cached supersampled sprite for smooth edges.
+    Non-uniform scale per frame applies the current jelly squish (foot stays anchored)."""
     sprite = _get_slime_sprite(slime.color)
+    if abs(slime.squish) > 0.001:
+        w, h = sprite.get_width(), sprite.get_height()
+        new_w = max(1, int(round(w * (1.0 + slime.squish))))
+        new_h = max(1, int(round(h * (1.0 - slime.squish))))
+        sprite = pygame.transform.smoothscale(sprite, (new_w, new_h))
     rect = sprite.get_rect()
     rect.midbottom = (int(round(slime.x)), int(round(slime.y)))
     surface.blit(sprite, rect)
@@ -774,9 +804,10 @@ def draw_settings(
 
 def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     """Bounce ball off the slime's dome (half-ellipse with flat bottom)."""
-    # Semi-axes of the dome, inflated by ball radius so collision is a "Minkowski sum"
-    a = SLIME_W / 2 + BALL_R
-    b = SLIME_H + BALL_R
+    # Semi-axes follow the current squish so the collision hitbox tracks the
+    # visual deformation. squish > 0 → wider & shorter; squish < 0 → narrower & taller.
+    a = (SLIME_W / 2) * (1.0 + slime.squish) + BALL_R
+    b =  SLIME_H     * (1.0 - slime.squish) + BALL_R
     dx = ball.x - slime.x
     dy = ball.y - slime.y            # negative when ball is above the flat bottom
     if dy > 0:
@@ -804,12 +835,17 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     rvx = ball.vx - slime.vx
     rvy = ball.vy - slime.vy
     dot = rvx * nx + rvy * ny
+    impact = -dot if dot < 0 else 0.0
     if dot < 0:
         rvx -= 2 * dot * nx
         rvy -= 2 * dot * ny
     boost = 50.0 * SCALE
     ball.vx = (rvx + slime.vx) * BALL_HIT_BOOST + nx * boost
     ball.vy = (rvy + slime.vy) * BALL_HIT_BOOST + ny * boost
+
+    # Jelly squash at the moment of impact — scales with approach speed
+    if impact > 0.0:
+        slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT)
 
     # Never let a slime hit place the ball on the far side of the net band —
     # otherwise the next frame's swept check has no chance to catch it and
