@@ -1,6 +1,7 @@
 """Beach Slime Volleyball — pygame-ce.
 
-Two-player local volleyball with Logitech F310 gamepad and keyboard support.
+Two-player local volleyball with universal gamepad and keyboard support.
+Gamepads use SDL GameController API (Xbox, PlayStation, Switch Pro, F310, etc.).
 Run:  python volleyball.py
 """
 
@@ -15,6 +16,7 @@ from dataclasses import dataclass, field
 
 import pygame
 from pygame import gfxdraw
+from pygame._sdl2 import controller as sdl_controller
 
 # ---------- Configuration ----------
 
@@ -68,17 +70,16 @@ P2_COLOR   = CERULEAN
 BALL_LIGHT = GOLD       # SVG panel color 1 (was yellow)
 BALL_DARK  = INDIGO     # SVG panel color 2 (was purple) + ball body backing
 
-# F310 (XInput) mappings — verified on Windows
-BTN_A = 0
-BTN_B = 1
-BTN_X = 2
-BTN_Y = 3
-BTN_LB = 4
-BTN_RB = 5
-BTN_BACK = 6
-BTN_START = 7
-AXIS_LX = 0
-AXIS_LY = 1
+# Universal gamepad mappings via SDL GameController API.
+# Physical layouts differ per vendor, but SDL exposes logical buttons/axes.
+BTN_A = pygame.CONTROLLER_BUTTON_A
+BTN_B = pygame.CONTROLLER_BUTTON_B
+BTN_START = pygame.CONTROLLER_BUTTON_START
+BTN_BACK = pygame.CONTROLLER_BUTTON_BACK
+BTN_DPAD_LEFT = pygame.CONTROLLER_BUTTON_DPAD_LEFT
+BTN_DPAD_RIGHT = pygame.CONTROLLER_BUTTON_DPAD_RIGHT
+AXIS_LX = pygame.CONTROLLER_AXIS_LEFTX
+AXIS_MAX = 32767.0
 STICK_DEADZONE = 0.25
 
 
@@ -187,7 +188,7 @@ class Player:
     balls: int = 0            # rallies won in the current game (0..BALLS_PER_GAME-1)
     big_stars: int = 0        # games won in the current match (0..STARS_PER_MATCH-1)
     small_stars: int = 0      # matches won in the tournament (0..STARS_PER_TOURNAMENT)
-    joystick_index: int | None = None
+    controller_index: int | None = None
     keys: dict = field(default_factory=dict)   # {'left':..., 'right':..., 'jump':...}
 
     def reset_tournament(self) -> None:
@@ -301,7 +302,7 @@ def ai_input(state: AIState, slime: Slime, ball: Ball, difficulty: str, now_ms: 
     return move, jump
 
 
-def read_player_input(player: Player, joysticks: list, keys, input_mode: str) -> tuple[float, bool]:
+def read_player_input(player: Player, controllers: list, keys, input_mode: str) -> tuple[float, bool]:
     """Return (move_axis in [-1, 1], jump_pressed_this_frame_or_held).
 
     input_mode is one of INPUT_AUTO / INPUT_KEYBOARD / INPUT_GAMEPAD.
@@ -312,24 +313,23 @@ def read_player_input(player: Player, joysticks: list, keys, input_mode: str) ->
     use_pad = input_mode != INPUT_KEYBOARD
     use_kb = input_mode != INPUT_GAMEPAD
 
-    js = None
-    if use_pad and player.joystick_index is not None and player.joystick_index < len(joysticks):
-        js = joysticks[player.joystick_index]
+    ctl = None
+    if use_pad and player.controller_index is not None and player.controller_index < len(controllers):
+        ctl = controllers[player.controller_index]
 
-    if js is not None:
+    if ctl is not None:
         try:
-            lx = js.get_axis(AXIS_LX)
+            lx = ctl.get_axis(AXIS_LX) / AXIS_MAX
         except pygame.error:
             lx = 0.0
         if abs(lx) > STICK_DEADZONE:
             move += lx
-        # D-Pad (hat)
-        if js.get_numhats() > 0:
-            hx, _ = js.get_hat(0)
-            if hx != 0:
-                move += hx
         try:
-            if js.get_button(BTN_A):
+            if ctl.get_button(BTN_DPAD_LEFT):
+                move -= 1.0
+            if ctl.get_button(BTN_DPAD_RIGHT):
+                move += 1.0
+            if ctl.get_button(BTN_A):
                 jump = True
         except pygame.error:
             pass
@@ -705,7 +705,7 @@ def draw_settings(
     current_mode: str,
     current_game_mode: str,
     current_difficulty: str,
-    joystick_count: int,
+    controller_count: int,
 ) -> dict[str, pygame.Rect]:
     """Draw the settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -863,7 +863,7 @@ def resolve_ball_walls_and_net(ball: Ball) -> None:
 # ---------- Game ----------
 
 
-def make_players(joysticks: list) -> tuple[Player, Player]:
+def make_players(controllers: list) -> tuple[Player, Player]:
     p1_slime = Slime(
         x=WIDTH * 0.25, color=P1_COLOR,
         left_bound=0, right_bound=NET_X - NET_WIDTH,
@@ -874,12 +874,12 @@ def make_players(joysticks: list) -> tuple[Player, Player]:
     )
     p1 = Player(
         slime=p1_slime,
-        joystick_index=0 if len(joysticks) >= 1 else None,
+        controller_index=0 if len(controllers) >= 1 else None,
         keys={"left": pygame.K_a, "right": pygame.K_d, "jump": pygame.K_w},
     )
     p2 = Player(
         slime=p2_slime,
-        joystick_index=1 if len(joysticks) >= 2 else None,
+        controller_index=1 if len(controllers) >= 2 else None,
         keys={"left": pygame.K_LEFT, "right": pygame.K_RIGHT, "jump": pygame.K_UP},
     )
     return p1, p2
@@ -925,15 +925,14 @@ def main() -> int:
     background = pygame.Surface((WIDTH, HEIGHT))
     render_background(background)
 
-    # Joysticks
-    pygame.joystick.init()
-    joysticks: list = []
-    for i in range(pygame.joystick.get_count()):
-        js = pygame.joystick.Joystick(i)
-        js.init()
-        joysticks.append(js)
+    # Gamepads via SDL GameController API (universal button/axis mapping)
+    sdl_controller.init()
+    controllers: list = []
+    for i in range(sdl_controller.get_count()):
+        if sdl_controller.is_controller(i):
+            controllers.append(sdl_controller.Controller(i))
 
-    p1, p2 = make_players(joysticks)
+    p1, p2 = make_players(controllers)
     ball = Ball()
     serve_side = 0
     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
@@ -999,7 +998,7 @@ def main() -> int:
                     serve_side = 0
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
-            elif event.type == pygame.JOYBUTTONDOWN:
+            elif event.type == pygame.CONTROLLERBUTTONDOWN:
                 if event.button == BTN_START and game_over:
                     p1.reset_tournament()
                     p2.reset_tournament()
@@ -1016,17 +1015,15 @@ def main() -> int:
                     serve_side = 0
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
-            elif event.type == pygame.JOYDEVICEADDED:
-                js = pygame.joystick.Joystick(event.device_index)
-                js.init()
-                joysticks.append(js)
-                # Reassign joystick indices — first joystick to p1, second to p2
-                p1.joystick_index = 0 if len(joysticks) >= 1 else None
-                p2.joystick_index = 1 if len(joysticks) >= 2 else None
-            elif event.type == pygame.JOYDEVICEREMOVED:
-                joysticks = [j for j in joysticks if j.get_instance_id() != event.instance_id]
-                p1.joystick_index = 0 if len(joysticks) >= 1 else None
-                p2.joystick_index = 1 if len(joysticks) >= 2 else None
+            elif event.type == pygame.CONTROLLERDEVICEADDED:
+                if sdl_controller.is_controller(event.device_index):
+                    controllers.append(sdl_controller.Controller(event.device_index))
+                    p1.controller_index = 0 if len(controllers) >= 1 else None
+                    p2.controller_index = 1 if len(controllers) >= 2 else None
+            elif event.type == pygame.CONTROLLERDEVICEREMOVED:
+                controllers = [c for c in controllers if c.id != event.instance_id]
+                p1.controller_index = 0 if len(controllers) >= 1 else None
+                p2.controller_index = 1 if len(controllers) >= 2 else None
 
         keys = pygame.key.get_pressed()
 
@@ -1038,11 +1035,11 @@ def main() -> int:
                 ball.vy = 0.0
 
             # Player input — P2 is AI-driven in single-player mode
-            m1, j1 = read_player_input(p1, joysticks, keys, input_mode)
+            m1, j1 = read_player_input(p1, controllers, keys, input_mode)
             if game_mode == MODE_AI:
                 m2, j2 = ai_input(ai_state, p2.slime, ball, ai_difficulty, pygame.time.get_ticks())
             else:
-                m2, j2 = read_player_input(p2, joysticks, keys, input_mode)
+                m2, j2 = read_player_input(p2, controllers, keys, input_mode)
             p1.slime.update(dt, m1, j1)
             p2.slime.update(dt, m2, j2)
 
@@ -1092,7 +1089,7 @@ def main() -> int:
         if settings_open:
             settings_rects = draw_settings(
                 screen, title_font, text_font, hint_font,
-                input_mode, game_mode, ai_difficulty, len(joysticks),
+                input_mode, game_mode, ai_difficulty, len(controllers),
             )
         else:
             settings_rects = {}
