@@ -5,7 +5,7 @@
 Xbox, PlayStation (DualShock/DualSense), Switch Pro, Logitech
 и другие XInput/DirectInput-контроллеры.
 
-<img src="_screenshot/img_6.png" width="800" height="450" alt="Beach Slime Volleyball">
+<img src="_screenshot/screenshot.png" width="800" height="450" alt="Beach Slime Volleyball">
 
 ## Установка
 
