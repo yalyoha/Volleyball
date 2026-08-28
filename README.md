@@ -2,7 +2,7 @@
 
 Пляжный волейбол в стиле slime-volleyball на Python + pygame-ce.
 Управление с клавиатуры и с любого геймпада, поддерживаемого SDL2:
-Xbox, PlayStation (DualShock/DualSense), Switch Pro, Logitech F310
+Xbox, PlayStation (DualShock/DualSense), Switch Pro, Logitech
 и другие XInput/DirectInput-контроллеры.
 
 <img src="_screenshot/img_6.png" width="800" height="450" alt="Beach Slime Volleyball">
@@ -43,7 +43,7 @@ python volleyball.py
 
 Первый подключённый геймпад = игрок 1 (красный, слева),
 второй = игрок 2 (синий, справа).
-Для Logitech F310 переключатель на задней стенке должен быть в положении `X` (XInput).
+Для Logitech переключатель на задней стенке должен быть в положении `X` (XInput).
 
 **Клавиатура** (fallback, если геймпадов нет):
 
