@@ -6,3 +6,6 @@ dist/
 icon.ico
 icon.png
 .idea/
+/.env
+/_screenshot/*
+!/_screenshot/img_6.png

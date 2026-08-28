@@ -3,19 +3,24 @@
 Пляжный волейбол в стиле slime-volleyball на Python + pygame-ce.
 Поддержка геймпадов Logitech F310 (режим XInput) и клавиатуры.
 
+<img src="_screenshot/img_6.png" width="800" height="450" alt="Beach Slime Volleyball">
+
 ## Установка
+
+Скачай готовый `BeachVolleyball.exe` со страницы релизов и запусти двойным кликом:
+
+<https://github.com/yalyoha/Volleyball/releases/latest>
+
+Ничего дополнительно ставить не нужно — Python и зависимости уже упакованы в exe.
+
+### Запуск из исходников (для разработки)
 
 ```
 pip install -r requirements.txt
+python volleyball.py
 ```
 
 Требуется Python 3.10+ и pygame-ce.
-
-## Запуск
-
-```
-python volleyball.py
-```
 
 ## Настройки
 
@@ -46,6 +51,7 @@ python volleyball.py
 
 - `P` — пауза
 - `R` — рестарт
+- `Enter` — рестарт после матча
 - `F11` / `F` — полноэкранный режим (переключение)
 - `Esc` — выход из полноэкранного режима, затем выход из игры
 
