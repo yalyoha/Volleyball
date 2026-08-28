@@ -492,13 +492,14 @@ BALL_SVG_PALETTE = {
 }
 
 
-def _get_ball_sprite() -> pygame.Surface | None:
-    """Rasterize Ball.svg (with CSS fills inlined) to a 2*BALL_R sprite. Cached."""
-    if "base" in _ball_sprite_cache:
-        return _ball_sprite_cache["base"]
+def _get_ball_sprite(target: int | None = None) -> pygame.Surface | None:
+    """Rasterize Ball.svg (with CSS fills inlined) to target×target. Cached per size."""
+    if target is None:
+        target = BALL_R * 2
+    if target in _ball_sprite_cache:
+        return _ball_sprite_cache[target]
     base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     svg_path = os.path.join(base_dir, "Ball.svg")
-    target = BALL_R * 2
     surf: pygame.Surface | None = None
     if os.path.exists(svg_path):
         try:
@@ -522,35 +523,49 @@ def _get_ball_sprite() -> pygame.Surface | None:
         if os.path.exists(png_path):
             img = pygame.image.load(png_path).convert_alpha()
             surf = pygame.transform.smoothscale(img, (target, target))
-    _ball_sprite_cache["base"] = surf
+    _ball_sprite_cache[target] = surf
     return surf
 
 
+# --- Baked ball with rotation cache ---
+# Bake the whole ball (dark ring + light interior + SVG pattern) once at high
+# supersample, pre-rotate into N frames. Per-frame draw_ball becomes a plain
+# blit — no per-frame rotozoom and no partially-AA gfxdraw circles.
+
+SUPERSAMPLE_BALL = 6
+BALL_ROT_FRAMES = 72
+
+_ball_frame_cache: list = []
+
+
+def _bake_ball_frames() -> list:
+    """Bake N rotated ball frames. Idempotent."""
+    if _ball_frame_cache:
+        return _ball_frame_cache
+    ss = SUPERSAMPLE_BALL
+    big_size = BALL_R * 2 * ss
+    big = pygame.Surface((big_size, big_size), pygame.SRCALPHA)
+    center = big_size // 2
+    ring_px = max(2, _s(2)) * ss              # ring thickness matches display scale
+    pygame.draw.circle(big, BALL_DARK,  (center, center), big_size // 2)
+    pygame.draw.circle(big, BALL_LIGHT, (center, center), big_size // 2 - ring_px)
+    pattern = _get_ball_sprite(target=big_size)
+    if pattern is not None:
+        big.blit(pattern, (0, 0))
+    for i in range(BALL_ROT_FRAMES):
+        angle = i * (360.0 / BALL_ROT_FRAMES)
+        _ball_frame_cache.append(pygame.transform.rotozoom(big, angle, 1.0 / ss))
+    return _ball_frame_cache
+
+
 def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
-    x, y, r = int(ball.x), int(ball.y), BALL_R
-    sprite = _get_ball_sprite()
-    if sprite is not None:
-        # Indigo outer disc (becomes the visible ring), gold body inset, sprite on top.
-        aa_circle(surface, BALL_DARK, (x, y), r)
-        aa_circle(surface, BALL_LIGHT, (x, y), r - max(2, _s(2)))
-        angle_deg = -math.degrees(ball.spin)
-        rotated = pygame.transform.rotozoom(sprite, angle_deg, 1.0)
-        rect = rotated.get_rect(center=(x, y))
-        surface.blit(rotated, rect)
-        return
-    # Fallback — procedural two-tone ball if the SVG/PNG is missing
-    aa_circle(surface, BALL_LIGHT, (x, y), r)
-    for i, color in enumerate([BALL_DARK, BALL_LIGHT, BALL_DARK]):
-        a = ball.spin + i * (2 * math.pi / 3)
-        pts = [
-            (x + math.cos(a + (k / 8) * math.pi * 0.55)
-                 * r * (0.55 + 0.35 * math.sin((k / 8) * math.pi)),
-             y + math.sin(a + (k / 8) * math.pi * 0.55)
-                 * r * (0.55 + 0.35 * math.sin((k / 8) * math.pi)))
-            for k in range(9)
-        ]
-        if len(pts) >= 3:
-            aa_polygon(surface, color, pts)
+    frames = _bake_ball_frames()
+    n = len(frames)
+    angle_deg = (-math.degrees(ball.spin)) % 360.0
+    idx = int(round(angle_deg * n / 360.0)) % n
+    frame = frames[idx]
+    rect = frame.get_rect(center=(int(round(ball.x)), int(round(ball.y))))
+    surface.blit(frame, rect)
 
 
 _score_cache: dict = {}
@@ -952,6 +967,9 @@ def serve(ball: Ball, side: int) -> None:
 
 def main() -> int:
     headless = os.environ.get("SDL_VIDEODRIVER") == "dummy"
+    # Use anisotropic filtering when SDL upscales the 1080p framebuffer to a
+    # higher-DPI monitor. Cleaner than the default linear/nearest filter.
+    os.environ.setdefault("SDL_HINT_RENDER_SCALE_QUALITY", "2")
     pygame.init()
     pygame.display.set_caption("Beach Slime Volleyball")
     # Window icon — resolve icon.png next to the script or inside PyInstaller bundle
