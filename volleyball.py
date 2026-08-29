@@ -858,7 +858,8 @@ def _render_smooth_text(base_font_size: int, text: str, color: tuple, bold: bool
 
 def draw_score(surface: pygame.Surface, font: pygame.font.Font, p1: Player, p2: Player) -> None:
     """Score in physical order: left-side-player score, right-side-player score."""
-    left_player = p1 if p1.slime.x < NET_X else p2
+    # Use bounds (not x) so the score doesn't flip mid-hop during side-swap animation.
+    left_player = p1 if p1.slime.left_bound < NET_X else p2
     right_player = p2 if left_player is p1 else p1
     text = f"{left_player.balls} - {right_player.balls}"
     img = _render_smooth_text(_s(64), text, SCORE_COLOR)
@@ -966,7 +967,9 @@ def draw_star_hud(surface: pygame.Surface, p1: Player, p2: Player) -> None:
     y_game  = y_match + match_size + _s(10)
 
     for player in (p1, p2):
-        cx = WIDTH * 0.25 if player.slime.x < NET_X else WIDTH * 0.75
+        # Use bounds (not x) so the HUD doesn't jitter during the swap-sides
+        # hop animation — bounds are swapped only when the animation completes.
+        cx = WIDTH * 0.25 if player.slime.left_bound < NET_X else WIDTH * 0.75
         _draw_star_row(surface, cx, y_match, match_size,
                        STARS_PER_TOURNAMENT, player.match_stars)
         _draw_star_row(surface, cx, y_game, game_size,
