@@ -9,3 +9,4 @@ icon.png
 /.env
 /_screenshot/*
 !/_screenshot/screenshot.png
+/fx.md
