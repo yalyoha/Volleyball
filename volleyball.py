@@ -1099,6 +1099,12 @@ def _draw_button_row(
         x += btn_w + gap
 
 
+TAB_GAME    = "tab_game"
+TAB_SCREEN  = "tab_screen"
+TAB_PLAYERS = "tab_players"
+SETTINGS_TABS = (TAB_GAME, TAB_SCREEN, TAB_PLAYERS)
+
+
 def draw_settings(
     surface: pygame.Surface,
     title_font: pygame.font.Font,
@@ -1115,13 +1121,14 @@ def draw_settings(
     current_arena: str,
     p1_color_id: str,
     p2_color_id: str,
+    current_tab: str,
 ) -> dict[str, pygame.Rect]:
-    """Compact settings overlay. Returns clickable rects keyed by action."""
+    """Tabbed settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill(INDIGO + (210,))
     surface.blit(overlay, (0, 0))
 
-    panel_w, panel_h = _s(680), _s(780)
+    panel_w, panel_h = _s(680), _s(560)
     panel = pygame.Rect((WIDTH - panel_w) // 2, (HEIGHT - panel_h) // 2, panel_w, panel_h)
     pygame.draw.rect(surface, CELADON, panel, border_radius=_s(16))
     pygame.draw.rect(surface, INDIGO, panel, width=_s(3), border_radius=_s(16))
@@ -1135,97 +1142,111 @@ def draw_settings(
     section_gap = _s(16)
     label_h = _s(20)
 
+    # Tab bar
+    tab_labels = ((TAB_GAME, "Игра"), (TAB_SCREEN, "Экран"), (TAB_PLAYERS, "Игроки"))
+    tab_w, tab_h = _s(140), _s(38)
+    tab_gap = _s(8)
+    total_tabs_w = 3 * tab_w + 2 * tab_gap
+    tab_y = panel.top + _s(62)
+    tab_x0 = panel.centerx - total_tabs_w // 2
+    for i, (tid, label) in enumerate(tab_labels):
+        r = pygame.Rect(tab_x0 + i * (tab_w + tab_gap), tab_y, tab_w, tab_h)
+        active = tid == current_tab
+        bg = SEAGRASS if active else GOLD
+        fg = GOLD if active else INDIGO
+        pygame.draw.rect(surface, bg, r, border_radius=_s(6))
+        pygame.draw.rect(surface, INDIGO, r, width=_s(2), border_radius=_s(6))
+        img = text_font.render(label, True, fg)
+        surface.blit(img, (r.centerx - img.get_width() // 2,
+                           r.centery - img.get_height() // 2))
+        rects[tid] = r
+
     def section_label(text: str, y: int) -> None:
         img = hint_font.render(text, True, INDIGO)
         surface.blit(img, (panel.left + _s(24), y))
 
-    row_y = panel.top + _s(64)
+    row_y = tab_y + tab_h + _s(24)
 
-    section_label("Ввод", row_y)
-    _draw_button_row(
-        surface, text_font,
-        [(INPUT_AUTO, "Авто"), (INPUT_GAMEPAD, "Геймпад"), (INPUT_KEYBOARD, "Клавиатура")],
-        current_mode, row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
-    )
-
-    row_y += label_h + btn_h + section_gap
-    section_label("Режим", row_y)
-    _draw_button_row(
-        surface, text_font,
-        [(MODE_DUO, "Вдвоём"), (MODE_AI, "ИИ")],
-        current_game_mode, row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
-    )
-
-    row_y += label_h + btn_h + section_gap
-    label_text = "Сложность ИИ" if current_game_mode == MODE_AI else "Сложность ИИ (только в режиме ИИ)"
-    section_label(label_text, row_y)
-    _draw_button_row(
-        surface, text_font,
-        [(DIFF_EASY, "Просто"), (DIFF_MEDIUM, "Средне"), (DIFF_HARD, "Сложно")],
-        current_difficulty, row_y + label_h, _s(150), btn_h, panel.centerx, rects,
-        enabled=(current_game_mode == MODE_AI),
-    )
-
-    row_y += label_h + btn_h + section_gap
-    section_label("Тряска экрана", row_y)
-    _draw_button_row(
-        surface, text_font,
-        [(SHAKE_STRONG, "Сильно"), (SHAKE_MEDIUM, "Средне"),
-         (SHAKE_WEAK, "Слабо"), (SHAKE_OFF, "Выкл")],
-        current_shake, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
-    )
-
-    row_y += label_h + btn_h + section_gap
-    section_label("Арена", row_y)
-    _draw_button_row(
-        surface, text_font,
-        [(ARENA_BEACH, "Пляж"), (ARENA_ARCTIC, "Арктика"),
-         (ARENA_JUNGLE, "Джунгли"), (ARENA_SPACE, "Космос")],
-        current_arena, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
-    )
-
-    row_y += label_h + btn_h + section_gap
-    section_label("Цвета игроков (клик по кружку)", row_y)
-    swatch_r = _s(18)
-    swatch_gap = _s(14)
-    row_h = swatch_r * 2 + _s(6)
-    swatches_row_w = 5 * (swatch_r * 2) + 4 * swatch_gap
-    for row_idx, (label, cur_id, key_prefix) in enumerate((
-        ("P1", p1_color_id, "p1color"),
-        ("P2", p2_color_id, "p2color"),
-    )):
-        y = row_y + label_h + row_idx * (row_h + _s(6))
-        lbl_img = text_font.render(label, True, INDIGO)
-        surface.blit(lbl_img, (panel.centerx - swatches_row_w // 2 - _s(46),
-                               y + row_h // 2 - lbl_img.get_height() // 2))
-        x = panel.centerx - swatches_row_w // 2 + swatch_r
-        for cid, _lbl, rgb in CHARACTER_COLORS:
-            center = (x, y + row_h // 2)
-            if cid == cur_id:
-                aa_circle(surface, INDIGO, center, swatch_r + _s(3))
-            aa_circle(surface, rgb, center, swatch_r)
-            hit = pygame.Rect(center[0] - swatch_r - _s(3), center[1] - swatch_r - _s(3),
-                              swatch_r * 2 + _s(6), swatch_r * 2 + _s(6))
-            rects[f"{key_prefix}_{cid}"] = hit
-            x += swatch_r * 2 + swatch_gap
-
-    row_y += label_h + row_h * 2 + _s(6) + section_gap
-    section_label("Никнеймы (клик по полю для редактирования)", row_y)
-    name_y = row_y + label_h
-    name_w, name_h = _s(260), _s(44)
-    gap = _s(28)
-    p1_rect = pygame.Rect(panel.centerx - name_w - gap // 2, name_y, name_w, name_h)
-    p2_rect = pygame.Rect(panel.centerx + gap // 2, name_y, name_w, name_h)
-    for key, r, name in (("edit_p1", p1_rect, p1_name), ("edit_p2", p2_rect, p2_name)):
-        is_editing = editing == key.split("_")[1]
-        bg = GOLD if is_editing else CELADON
-        pygame.draw.rect(surface, bg, r, border_radius=_s(8))
-        pygame.draw.rect(surface, INDIGO, r, width=_s(2), border_radius=_s(8))
-        shown = name + ("|" if is_editing else "")
-        img = text_font.render(shown, True, INDIGO)
-        surface.blit(img, (r.centerx - img.get_width() // 2,
-                           r.centery - img.get_height() // 2))
-        rects[key] = r
+    if current_tab == TAB_GAME:
+        section_label("Режим", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [(MODE_DUO, "Вдвоём"), (MODE_AI, "ИИ")],
+            current_game_mode, row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
+        )
+        row_y += label_h + btn_h + section_gap
+        label_text = "Сложность ИИ" if current_game_mode == MODE_AI else "Сложность ИИ (только в режиме ИИ)"
+        section_label(label_text, row_y)
+        _draw_button_row(
+            surface, text_font,
+            [(DIFF_EASY, "Просто"), (DIFF_MEDIUM, "Средне"), (DIFF_HARD, "Сложно")],
+            current_difficulty, row_y + label_h, _s(150), btn_h, panel.centerx, rects,
+            enabled=(current_game_mode == MODE_AI),
+        )
+        row_y += label_h + btn_h + section_gap
+        section_label("Ввод", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [(INPUT_AUTO, "Авто"), (INPUT_GAMEPAD, "Геймпад"), (INPUT_KEYBOARD, "Клавиатура")],
+            current_mode, row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
+        )
+    elif current_tab == TAB_SCREEN:
+        section_label("Арена", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [(ARENA_BEACH, "Пляж"), (ARENA_ARCTIC, "Арктика"),
+             (ARENA_JUNGLE, "Джунгли"), (ARENA_SPACE, "Космос")],
+            current_arena, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
+        )
+        row_y += label_h + btn_h + section_gap
+        section_label("Тряска экрана", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [(SHAKE_STRONG, "Сильно"), (SHAKE_MEDIUM, "Средне"),
+             (SHAKE_WEAK, "Слабо"), (SHAKE_OFF, "Выкл")],
+            current_shake, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
+        )
+    elif current_tab == TAB_PLAYERS:
+        section_label("Никнеймы (клик по полю для редактирования)", row_y)
+        name_y = row_y + label_h
+        name_w, name_h = _s(260), _s(44)
+        gap = _s(28)
+        p1_rect = pygame.Rect(panel.centerx - name_w - gap // 2, name_y, name_w, name_h)
+        p2_rect = pygame.Rect(panel.centerx + gap // 2, name_y, name_w, name_h)
+        for key, r, name in (("edit_p1", p1_rect, p1_name), ("edit_p2", p2_rect, p2_name)):
+            is_editing = editing == key.split("_")[1]
+            bg = GOLD if is_editing else CELADON
+            pygame.draw.rect(surface, bg, r, border_radius=_s(8))
+            pygame.draw.rect(surface, INDIGO, r, width=_s(2), border_radius=_s(8))
+            shown = name + ("|" if is_editing else "")
+            img = text_font.render(shown, True, INDIGO)
+            surface.blit(img, (r.centerx - img.get_width() // 2,
+                               r.centery - img.get_height() // 2))
+            rects[key] = r
+        row_y += label_h + name_h + section_gap
+        section_label("Цвета игроков (клик по кружку)", row_y)
+        swatch_r = _s(18)
+        swatch_gap = _s(14)
+        row_h = swatch_r * 2 + _s(6)
+        swatches_row_w = 5 * (swatch_r * 2) + 4 * swatch_gap
+        for row_idx, (label, cur_id, key_prefix) in enumerate((
+            ("P1", p1_color_id, "p1color"),
+            ("P2", p2_color_id, "p2color"),
+        )):
+            y = row_y + label_h + row_idx * (row_h + _s(6))
+            lbl_img = text_font.render(label, True, INDIGO)
+            surface.blit(lbl_img, (panel.centerx - swatches_row_w // 2 - _s(46),
+                                   y + row_h // 2 - lbl_img.get_height() // 2))
+            x = panel.centerx - swatches_row_w // 2 + swatch_r
+            for cid, _lbl, rgb in CHARACTER_COLORS:
+                center = (x, y + row_h // 2)
+                if cid == cur_id:
+                    aa_circle(surface, INDIGO, center, swatch_r + _s(3))
+                aa_circle(surface, rgb, center, swatch_r)
+                hit = pygame.Rect(center[0] - swatch_r - _s(3), center[1] - swatch_r - _s(3),
+                                  swatch_r * 2 + _s(6), swatch_r * 2 + _s(6))
+                rects[f"{key_prefix}_{cid}"] = hit
+                x += swatch_r * 2 + swatch_gap
 
     back = pygame.Rect(panel.centerx - _s(80), panel.bottom - _s(56), _s(160), _s(42))
     pygame.draw.rect(surface, CERULEAN, back, border_radius=_s(8))
@@ -1466,6 +1487,7 @@ def main() -> int:
     game_over = False
     winner_msg = ""
     settings_open = False
+    settings_tab = TAB_GAME
     in_menu = True                       # main menu shown at startup
     menu_play_rect = pygame.Rect(0, 0, 0, 0)
     editing_name: str | None = None      # 'p1' | 'p2' | None — text-input target
@@ -1547,6 +1569,8 @@ def main() -> int:
                                 current_arena = key
                                 render_background(background, current_arena)
                                 _save_prefs()
+                            elif key in SETTINGS_TABS:
+                                settings_tab = key
                             elif key.startswith("p1color_") or key.startswith("p2color_"):
                                 who, cid = key.split("_", 1)
                                 if who == "p1color":
@@ -1766,7 +1790,7 @@ def main() -> int:
                 world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
                 p1.name, p2.name, editing_name, shake_preset, current_arena,
-                p1_color_id, p2_color_id,
+                p1_color_id, p2_color_id, settings_tab,
             )
         else:
             settings_rects = {}
