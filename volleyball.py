@@ -48,14 +48,14 @@ BALL_MAX_SPEED = 1100.0 * SCALE
 BALL_BOUNCE_DAMP = 0.95
 BALL_HIT_BOOST = 1.08
 
-# Jelly slime deformation — soft style: ±15% amplitude cap, ~0.3s return time,
+# Jelly slime deformation — soft style: ±22% amplitude cap, ~0.4s return time,
 # mild single overshoot. Squish > 0 means squashed (wider, shorter dome).
-SQUISH_CAP = 0.15
-SQUISH_K = 400.0                        # spring stiffness (ω ≈ 20 rad/s)
-SQUISH_C = 16.0                         # damping (ζ ≈ 0.4 — light bounce)
-SQUISH_JUMP = 0.10                      # anticipation stretch on jump
-SQUISH_PER_LAND_VY = 1.2e-4             # squash per unit of landing vy
-SQUISH_PER_HIT_DOT = 1.5e-4             # squash per unit of ball impact normal speed
+SQUISH_CAP = 0.22
+SQUISH_K = 280.0                        # spring stiffness (ω ≈ 16.7 rad/s) — longer visible cycle
+SQUISH_C = 13.0                         # damping (ζ ≈ 0.39 — light bounce)
+SQUISH_JUMP = 0.16                      # anticipation stretch on jump
+SQUISH_PER_LAND_VY = 1.8e-4             # squash per unit of landing vy
+SQUISH_PER_HIT_DOT = 2.4e-4             # squash per unit of ball impact normal speed
 
 # Slime arm poses (unit direction vectors, +x right, +y down)
 _ARM_IDLE_L   = (-0.70, +0.72)
