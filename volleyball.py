@@ -796,8 +796,9 @@ def _bake_ball_frames() -> list:
 
 
 def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
-    # Additive glow trail — older points shrink; freshness comes from size, so
-    # the pre-baked glow sprite can be blitted as-is with BLEND_RGBA_ADD.
+    # Translucent glow trail — older points shrink; the pre-baked glow sprite
+    # already has per-pixel alpha, so a plain alpha-blit lets the background
+    # show through instead of adding to it.
     if _ball_glow_enabled and ball.trail:
         glow = _get_ball_glow()
         trail_len = len(ball.trail)
@@ -805,8 +806,7 @@ def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
             u = (i + 1) / trail_len            # 0..1, newer → higher
             r = max(2, int(BALL_R * (0.55 + 0.85 * u)))
             scaled = pygame.transform.smoothscale(glow, (r * 2, r * 2))
-            surface.blit(scaled, (int(tx - r), int(ty - r)),
-                         special_flags=pygame.BLEND_RGBA_ADD)
+            surface.blit(scaled, (int(tx - r), int(ty - r)))
     frames = _bake_ball_frames()
     n = len(frames)
     angle_deg = (-math.degrees(ball.spin)) % 360.0
@@ -826,15 +826,13 @@ def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
             rotated, (max(1, int(round(rw * sx))), max(1, int(round(rh * sy))))
         )
         frame = pygame.transform.rotate(scaled, -vel_deg)
-    # Halo under the ball when it's moving — additive, sized by speed.
+    # Halo under the ball when it's moving — translucent, sized by speed.
     if _ball_glow_enabled and speed_sq > 40000.0:
         speed = math.sqrt(speed_sq)
         k = min(1.0, (speed - 200.0) / 700.0)   # 0 at threshold, 1 fast
         hr = int(BALL_R * (1.4 + 0.8 * k))
         halo = pygame.transform.smoothscale(_get_ball_glow(), (hr * 2, hr * 2))
-        surface.blit(halo,
-                     (int(round(ball.x)) - hr, int(round(ball.y)) - hr),
-                     special_flags=pygame.BLEND_RGBA_ADD)
+        surface.blit(halo, (int(round(ball.x)) - hr, int(round(ball.y)) - hr))
     rect = frame.get_rect(center=(int(round(ball.x)), int(round(ball.y))))
     surface.blit(frame, rect)
 
