@@ -2134,8 +2134,11 @@ def main() -> int:
             resolve_ball_slime(ball, p2.slime)
             resolve_ball_arms(ball, p2.slime)
 
-            # Ground — award the rally and advance the tournament ladder
-            if ball.y + BALL_R >= GROUND_FOOT_Y and not ball.frozen:
+            # Ground — award the rally only when the ball reaches the bottom of
+            # the screen. Ball may sink into the sand below the slime's baseline;
+            # arm collisions keep firing during that fall, so a low arm can still
+            # save it right up until the ball leaves the frame.
+            if ball.y + BALL_R >= HEIGHT and not ball.frozen:
                 scored_side = 1 if ball.x < NET_X else 0    # opposite side scores
                 winner, loser = (p1, p2) if scored_side == 0 else (p2, p1)
                 winner.balls += 1
