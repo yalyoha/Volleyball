@@ -621,8 +621,11 @@ def _render_smooth_text(base_font_size: int, text: str, color: tuple, bold: bool
     return small
 
 
-def draw_score(surface: pygame.Surface, font: pygame.font.Font, left: int, right: int) -> None:
-    text = f"{left} - {right}"
+def draw_score(surface: pygame.Surface, font: pygame.font.Font, p1: Player, p2: Player) -> None:
+    """Score in physical order: left-side-player score, right-side-player score."""
+    left_player = p1 if p1.slime.x < NET_X else p2
+    right_player = p2 if left_player is p1 else p1
+    text = f"{left_player.balls} - {right_player.balls}"
     img = _render_smooth_text(_s(64), text, SCORE_COLOR)
     x = (WIDTH - img.get_width()) // 2
     surface.blit(img, (x, _s(20)))
@@ -720,67 +723,38 @@ def _draw_star_row(surface: pygame.Surface, center_x: float, y: float,
 
 
 def draw_star_hud(surface: pygame.Surface, p1: Player, p2: Player) -> None:
-    """Two rows of stars above each player's half — big (tournament sets) on top,
-    small (current match games) below. Bigger achievement = bigger star."""
-    match_size = _s(34)         # match wins = bigger achievement → bigger star
-    game_size  = _s(22)         # game wins = smaller achievement → smaller star
+    """Two rows of stars above each player's current physical half. HUD follows
+    the slime after side-swaps so the stars are always above their owner."""
+    match_size = _s(34)         # sets = bigger achievement → bigger star
+    game_size  = _s(22)         # games = smaller achievement → smaller star
     y_match = _s(20)
     y_game  = y_match + match_size + _s(10)
 
-    for cx, player in ((WIDTH * 0.25, p1), (WIDTH * 0.75, p2)):
+    for player in (p1, p2):
+        cx = WIDTH * 0.25 if player.slime.x < NET_X else WIDTH * 0.75
         _draw_star_row(surface, cx, y_match, match_size,
                        STARS_PER_TOURNAMENT, player.match_stars)
         _draw_star_row(surface, cx, y_game, game_size,
                        STARS_PER_MATCH, player.game_stars)
 
 
-def point_status(player: Player) -> str | None:
-    """Announcer text if `player` is one rally from winning set or match.
-    Per-game point is intentionally silent — it triggers too often to feel special."""
-    if player.balls != BALLS_PER_GAME - 1:
-        return None
-    if (player.match_stars == STARS_PER_TOURNAMENT - 1
-            and player.game_stars == STARS_PER_MATCH - 1):
-        return "МАТЧ-ПОИНТ"
-    if player.game_stars == STARS_PER_MATCH - 1:
-        return "СЕТ-ПОИНТ"
-    return None
-
-
-def draw_point_hints(surface: pygame.Surface, p1: Player, p2: Player,
-                     font: pygame.font.Font) -> None:
-    y = _s(150)
-    for cx, player in ((WIDTH * 0.25, p1), (WIDTH * 0.75, p2)):
-        hint = point_status(player)
-        if hint is None:
-            continue
-        img = font.render(hint, True, INDIGO)
-        surface.blit(img, (int(cx - img.get_width() / 2), y))
-
-
 def draw_star_toast(surface: pygame.Surface, toast: dict, big_font: pygame.font.Font,
                     small_font: pygame.font.Font) -> None:
-    """Big central star + '{name}: гейм/сет!' — brief on-earn overlay.
-    toast: {'until_ms': int, 'name': str, 'kind': 'game'|'match'}."""
-    now_ms = pygame.time.get_ticks()
-    remaining = toast["until_ms"] - now_ms
-    if remaining <= 0:
-        return
+    """Big central star + '{name} — победа/сет!' + подсказка «A / Пробел — продолжить».
+    toast: {'name': str, 'kind': 'game' | 'match'}."""
     kind = toast["kind"]
-    # Match stars are the bigger achievement — draw them larger.
     star_px = _s(220 if kind == "match" else 160)
     label = "сет" if kind == "match" else "победа"
     star = _get_star_sprite(star_px, filled=True)
-    # Fade out over the last 300 ms
-    alpha = 255 if remaining > 300 else int(255 * remaining / 300)
-    star = star.copy()
-    star.set_alpha(alpha)
-    rect = star.get_rect(center=(WIDTH // 2, HEIGHT // 2 - _s(30)))
+    rect = star.get_rect(center=(WIDTH // 2, HEIGHT // 2 - _s(60)))
     surface.blit(star, rect)
-    text = f"{toast['name']}: {label}!"
-    img = big_font.render(text, True, INDIGO)
-    img.set_alpha(alpha)
-    surface.blit(img, ((WIDTH - img.get_width()) // 2, rect.bottom + _s(10)))
+    name_img = big_font.render(f"{toast['name']} — {label}!", True, INDIGO)
+    surface.blit(name_img, ((WIDTH - name_img.get_width()) // 2, rect.bottom + _s(14)))
+    hint_img = small_font.render("Нажми A на геймпаде или ПРОБЕЛ на клавиатуре",
+                                 True, INDIGO)
+    surface.blit(hint_img,
+                 ((WIDTH - hint_img.get_width()) // 2,
+                  rect.bottom + _s(14) + name_img.get_height() + _s(20)))
 
 
 # ---------- Juice: particles, screen shake, hit-stop ----------
@@ -842,12 +816,23 @@ def draw_particles(surface: pygame.Surface) -> None:
         surface.blit(surf, (int(p.x - r), int(p.y - r)))
 
 
-SHAKE_CAP = None    # computed in _init_shake_cap once _s is available at call time
+SHAKE_STRONG = "strong"
+SHAKE_MEDIUM = "medium"
+SHAKE_WEAK   = "weak"
+SHAKE_OFF    = "off"
+_SHAKE_SCALES = {SHAKE_STRONG: 1.0, SHAKE_MEDIUM: 0.6, SHAKE_WEAK: 0.2, SHAKE_OFF: 0.0}
+_shake_scale: float = 0.6              # matches "Средне" default
+
+
+def set_shake_preset(preset: str) -> None:
+    global _shake_scale
+    _shake_scale = _SHAKE_SCALES.get(preset, 0.6)
 
 
 def add_shake(amount: float) -> None:
     global _shake
-    _shake = min(_s(11), max(_shake, amount))
+    amount *= _shake_scale
+    _shake = min(_s(22), max(_shake, amount))
 
 
 def update_shake(dt: float) -> None:
@@ -1052,75 +1037,89 @@ def draw_settings(
     controller_count: int,
     p1_name: str,
     p2_name: str,
-    editing: str | None,          # 'p1' | 'p2' | None
+    editing: str | None,
+    current_shake: str,
 ) -> dict[str, pygame.Rect]:
-    """Draw the settings overlay. Returns clickable rects keyed by action."""
+    """Compact settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill(INDIGO + (210,))
     surface.blit(overlay, (0, 0))
 
-    panel_w, panel_h = _s(760), _s(660)
+    panel_w, panel_h = _s(680), _s(600)
     panel = pygame.Rect((WIDTH - panel_w) // 2, (HEIGHT - panel_h) // 2, panel_w, panel_h)
-    pygame.draw.rect(surface, CELADON, panel, border_radius=_s(18))
-    pygame.draw.rect(surface, INDIGO, panel, width=_s(4), border_radius=_s(18))
+    pygame.draw.rect(surface, CELADON, panel, border_radius=_s(16))
+    pygame.draw.rect(surface, INDIGO, panel, width=_s(3), border_radius=_s(16))
 
     title = title_font.render("Настройки", True, INDIGO)
-    surface.blit(title, (panel.centerx - title.get_width() // 2, panel.top + _s(20)))
+    surface.blit(title, (panel.centerx - title.get_width() // 2, panel.top + _s(12)))
 
     rects: dict[str, pygame.Rect] = {}
+    btn_w_std, btn_h = _s(160), _s(44)
+    btn_w_sm = _s(120)
+    section_gap = _s(16)
+    label_h = _s(20)
 
     def section_label(text: str, y: int) -> None:
         img = hint_font.render(text, True, INDIGO)
-        surface.blit(img, (panel.left + _s(30), y))
+        surface.blit(img, (panel.left + _s(24), y))
 
-    row_y = panel.top + _s(90)
+    row_y = panel.top + _s(64)
 
     section_label("Ввод", row_y)
     _draw_button_row(
         surface, text_font,
         [(INPUT_AUTO, "Авто"), (INPUT_GAMEPAD, "Геймпад"), (INPUT_KEYBOARD, "Клавиатура")],
-        current_mode, row_y + _s(24), _s(200), _s(56), panel.centerx, rects,
+        current_mode, row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
     )
 
-    row_y += _s(24) + _s(56) + _s(30)
+    row_y += label_h + btn_h + section_gap
     section_label("Режим", row_y)
     _draw_button_row(
         surface, text_font,
         [(MODE_DUO, "Вдвоём"), (MODE_AI, "ИИ")],
-        current_game_mode, row_y + _s(24), _s(200), _s(56), panel.centerx, rects,
+        current_game_mode, row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
     )
 
-    row_y += _s(24) + _s(56) + _s(30)
-    label_text = "Сложность ИИ" + (" (только в режиме ИИ)" if current_game_mode != MODE_AI else "")
+    row_y += label_h + btn_h + section_gap
+    label_text = "Сложность ИИ" if current_game_mode == MODE_AI else "Сложность ИИ (только в режиме ИИ)"
     section_label(label_text, row_y)
     _draw_button_row(
         surface, text_font,
         [(DIFF_EASY, "Просто"), (DIFF_MEDIUM, "Средне"), (DIFF_HARD, "Сложно")],
-        current_difficulty, row_y + _s(24), _s(180), _s(56), panel.centerx, rects,
+        current_difficulty, row_y + label_h, _s(150), btn_h, panel.centerx, rects,
         enabled=(current_game_mode == MODE_AI),
     )
 
-    row_y += _s(24) + _s(56) + _s(30)
+    row_y += label_h + btn_h + section_gap
+    section_label("Тряска экрана", row_y)
+    _draw_button_row(
+        surface, text_font,
+        [(SHAKE_STRONG, "Сильно"), (SHAKE_MEDIUM, "Средне"),
+         (SHAKE_WEAK, "Слабо"), (SHAKE_OFF, "Выкл")],
+        current_shake, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
+    )
+
+    row_y += label_h + btn_h + section_gap
     section_label("Никнеймы (клик по полю для редактирования)", row_y)
-    name_y = row_y + _s(24)
-    name_w, name_h = _s(300), _s(52)
-    gap = _s(40)
+    name_y = row_y + label_h
+    name_w, name_h = _s(260), _s(44)
+    gap = _s(28)
     p1_rect = pygame.Rect(panel.centerx - name_w - gap // 2, name_y, name_w, name_h)
     p2_rect = pygame.Rect(panel.centerx + gap // 2, name_y, name_w, name_h)
     for key, r, name in (("edit_p1", p1_rect, p1_name), ("edit_p2", p2_rect, p2_name)):
         is_editing = editing == key.split("_")[1]
         bg = GOLD if is_editing else CELADON
-        pygame.draw.rect(surface, bg, r, border_radius=_s(10))
-        pygame.draw.rect(surface, INDIGO, r, width=_s(2), border_radius=_s(10))
+        pygame.draw.rect(surface, bg, r, border_radius=_s(8))
+        pygame.draw.rect(surface, INDIGO, r, width=_s(2), border_radius=_s(8))
         shown = name + ("|" if is_editing else "")
         img = text_font.render(shown, True, INDIGO)
         surface.blit(img, (r.centerx - img.get_width() // 2,
                            r.centery - img.get_height() // 2))
         rects[key] = r
 
-    back = pygame.Rect(panel.centerx - _s(100), panel.bottom - _s(70), _s(200), _s(48))
-    pygame.draw.rect(surface, CERULEAN, back, border_radius=_s(10))
-    pygame.draw.rect(surface, INDIGO, back, width=_s(2), border_radius=_s(10))
+    back = pygame.Rect(panel.centerx - _s(80), panel.bottom - _s(56), _s(160), _s(42))
+    pygame.draw.rect(surface, CERULEAN, back, border_radius=_s(8))
+    pygame.draw.rect(surface, INDIGO, back, width=_s(2), border_radius=_s(8))
     back_img = text_font.render("Назад", True, GOLD)
     surface.blit(back_img, (back.centerx - back_img.get_width() // 2,
                             back.centery - back_img.get_height() // 2))
@@ -1178,7 +1177,8 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
         slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT)
         sfx_play("hit", volume=min(1.0, 0.35 + impact / 1200.0))
         if impact > 700.0:
-            add_shake(min(_s(11), (impact - 700.0) / 120.0))
+            # Base "strong" magnitude; add_shake scales by user setting.
+            add_shake(min(_s(22), (impact - 700.0) / 60.0))
 
     # Never let a slime hit place the ball on the far side of the net band —
     # otherwise the next frame's swept check has no chance to catch it and
@@ -1357,13 +1357,17 @@ def main() -> int:
     winner_msg = ""
     settings_open = False
     editing_name: str | None = None      # 'p1' | 'p2' | None — text-input target
-    star_toast: dict | None = None       # {'until_ms': int, 'name': str, 'kind': 'game'|'match'}
+    star_toast: dict | None = None       # {'name': str, 'kind': 'game' | 'match'}
+    awaiting_continue: bool = False      # after a star, wait for A/Space before swapping sides + serving
     input_mode    = prefs.get("input_mode", INPUT_AUTO)
     game_mode     = prefs.get("game_mode",  MODE_DUO)
     ai_difficulty = prefs.get("ai_difficulty", DIFF_MEDIUM)
+    shake_preset  = prefs.get("shake", SHAKE_MEDIUM)
     if input_mode    not in (INPUT_AUTO, INPUT_KEYBOARD, INPUT_GAMEPAD): input_mode    = INPUT_AUTO
     if game_mode     not in (MODE_DUO, MODE_AI):                         game_mode     = MODE_DUO
     if ai_difficulty not in (DIFF_EASY, DIFF_MEDIUM, DIFF_HARD):         ai_difficulty = DIFF_MEDIUM
+    if shake_preset  not in _SHAKE_SCALES:                               shake_preset  = SHAKE_MEDIUM
+    set_shake_preset(shake_preset)
     global _muted
     _muted = bool(prefs.get("muted", False))
     ai_state = AIState()
@@ -1377,6 +1381,7 @@ def main() -> int:
             "p1_name": p1.name, "p2_name": p2.name,
             "input_mode": input_mode, "game_mode": game_mode,
             "ai_difficulty": ai_difficulty, "muted": _muted,
+            "shake": shake_preset,
         })
 
     # Hit-stop is a module-level counter we mutate from the main loop
@@ -1407,6 +1412,10 @@ def main() -> int:
                                 game_mode = key; _save_prefs()
                             elif key in (DIFF_EASY, DIFF_MEDIUM, DIFF_HARD):
                                 ai_difficulty = key; _save_prefs()
+                            elif key in _SHAKE_SCALES:
+                                shake_preset = key
+                                set_shake_preset(shake_preset)
+                                _save_prefs()
                             elif key in ("edit_p1", "edit_p2"):
                                 if editing_name:
                                     _save_prefs()
@@ -1453,6 +1462,14 @@ def main() -> int:
                     paused = not paused
                 elif event.key == pygame.K_m:
                     sfx_toggle_mute(); _save_prefs()
+                elif event.key == pygame.K_SPACE and awaiting_continue:
+                    # swap sides, serve to loser's new side
+                    p1.slime, p2.slime = p2.slime, p1.slime
+                    serve_side = 1 - serve_side
+                    serve(ball, serve_side)
+                    serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
+                    awaiting_continue = False
+                    star_toast = None
                 elif event.key == pygame.K_r or (
                     game_over and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER)
                 ):
@@ -1463,6 +1480,14 @@ def main() -> int:
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
             elif event.type == pygame.CONTROLLERBUTTONDOWN:
+                if event.button == BTN_A and awaiting_continue:
+                    p1.slime, p2.slime = p2.slime, p1.slime
+                    serve_side = 1 - serve_side
+                    serve(ball, serve_side)
+                    serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
+                    awaiting_continue = False
+                    star_toast = None
+                    continue
                 if event.button == BTN_START and game_over:
                     p1.reset_tournament()
                     p2.reset_tournament()
@@ -1491,10 +1516,12 @@ def main() -> int:
 
         keys = pygame.key.get_pressed()
 
-        if _hitstop_frames > 0 and not paused and not game_over and not settings_open:
+        if (_hitstop_frames > 0 and not paused and not game_over
+                and not settings_open and not awaiting_continue):
             _hitstop_frames -= 1
 
-        if not paused and not game_over and not settings_open and _hitstop_frames == 0:
+        if (not paused and not game_over and not settings_open
+                and _hitstop_frames == 0 and not awaiting_continue):
             # Serve delay
             if ball.frozen and pygame.time.get_ticks() >= serve_timer:
                 ball.frozen = False
@@ -1528,19 +1555,20 @@ def main() -> int:
                     winner.balls = 0
                     loser.balls = 0
                     winner.game_stars += 1
-                    star_toast = {"until_ms": pygame.time.get_ticks() + STAR_TOAST_MS,
-                                  "name": winner.name, "kind": "game"}
+                    star_toast = {"name": winner.name, "kind": "game"}
                     if winner.game_stars >= STARS_PER_MATCH:
                         winner.game_stars = 0
                         loser.game_stars = 0
                         winner.match_stars += 1
-                        star_toast = {"until_ms": pygame.time.get_ticks() + STAR_TOAST_MS,
-                                      "name": winner.name, "kind": "match"}
+                        star_toast = {"name": winner.name, "kind": "match"}
                         if winner.match_stars >= STARS_PER_TOURNAMENT:
                             game_over = True
                             winner_msg = f"{winner.name} выиграл турнир!"
                             sfx_play("win", volume=0.7)
-                if not game_over:
+                            star_toast = None       # tournament screen replaces the toast
+                    if star_toast is not None:
+                        awaiting_continue = True    # pause until A/Space
+                if not game_over and not awaiting_continue:
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
 
@@ -1555,17 +1583,13 @@ def main() -> int:
         draw_slime(world, p2.slime)
         draw_particles(world)
         draw_ball(world, ball)
-        draw_score(world, score_font, p1.balls, p2.balls)
+        draw_score(world, score_font, p1, p2)
         draw_star_hud(world, p1, p2)
-        draw_point_hints(world, p1, p2, text_font)
         gear_rect = draw_gear_icon(world)
 
-        # On-earn star overlay (fades over the last 300 ms of its lifetime)
+        # On-earn star overlay — stays until player presses continue
         if star_toast is not None:
-            if pygame.time.get_ticks() >= star_toast["until_ms"]:
-                star_toast = None
-            else:
-                draw_star_toast(world, star_toast, msg_font, text_font)
+            draw_star_toast(world, star_toast, msg_font, text_font)
 
         if paused:
             draw_message(world, msg_font, ["PAUSED", "Press P to resume"])
@@ -1576,7 +1600,7 @@ def main() -> int:
             settings_rects = draw_settings(
                 world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
-                p1.name, p2.name, editing_name,
+                p1.name, p2.name, editing_name, shake_preset,
             )
         else:
             settings_rects = {}
