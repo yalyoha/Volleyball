@@ -401,11 +401,53 @@ def read_player_input(player: Player, controllers: list, keys, input_mode: str) 
 # ---------- Rendering ----------
 
 
-def render_background(surface: pygame.Surface) -> None:
-    """Flat celadon background above the sand, gold sand below."""
+ARENA_BEACH  = "arena_beach"
+ARENA_ARCTIC = "arena_arctic"
+ARENA_JUNGLE = "arena_jungle"
+ARENA_SPACE  = "arena_space"
+ARENAS = (ARENA_BEACH, ARENA_ARCTIC, ARENA_JUNGLE, ARENA_SPACE)
+
+# Palette per arena: (sky_color, ground_color)
+_ARENA_PALETTES = {
+    ARENA_BEACH:  ((0xBC, 0xD8, 0xC1), (0xE9, 0xD9, 0x85)),   # celadon + gold
+    ARENA_ARCTIC: ((0xB2, 0xD2, 0xE6), (0xEC, 0xF2, 0xF7)),   # icy blue + snow
+    ARENA_JUNGLE: ((0xF0, 0xC8, 0x82), (0x58, 0x91, 0x50)),   # sunset + moss
+    ARENA_SPACE:  ((0xAA, 0x9B, 0xD2), (0x5A, 0x50, 0x82)),   # cosmic lavender
+}
+
+
+def render_background(surface: pygame.Surface, arena: str = ARENA_BEACH) -> None:
+    """Flat sky above the sand, ground below. Palette follows the arena."""
+    sky, ground = _ARENA_PALETTES.get(arena, _ARENA_PALETTES[ARENA_BEACH])
     sand_top = GROUND_Y - _s(10)
-    surface.fill(BG_COLOR, (0, 0, WIDTH, sand_top))
-    surface.fill(SAND, (0, sand_top, WIDTH, HEIGHT - sand_top))
+    surface.fill(sky,    (0, 0, WIDTH, sand_top))
+    surface.fill(ground, (0, sand_top, WIDTH, HEIGHT - sand_top))
+    _draw_arena_deco(surface, arena, sand_top)
+
+
+def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None:
+    """Cheap identity decoration for each arena."""
+    if arena == ARENA_ARCTIC:
+        # Three white mountains in the distance
+        mtn = (0xF5, 0xF9, 0xFC)
+        for cx_frac, w_frac, h_frac in ((0.20, 0.30, 0.34), (0.50, 0.36, 0.42), (0.82, 0.28, 0.28)):
+            cx = int(WIDTH * cx_frac)
+            w = int(WIDTH * w_frac)
+            h = int(HEIGHT * h_frac)
+            pts = [(cx - w // 2, sand_top), (cx, sand_top - h), (cx + w // 2, sand_top)]
+            aa_polygon(surface, mtn, pts)
+    elif arena == ARENA_JUNGLE:
+        # A tropical warm sun in the sky
+        sun = (0xF7, 0xE6, 0xB3)
+        aa_circle(surface, sun, (int(WIDTH * 0.82), int(HEIGHT * 0.22)), _s(90))
+    elif arena == ARENA_SPACE:
+        # Star field — deterministic (seeded) so it doesn't jitter frame-to-frame
+        rng = random.Random(1337)
+        for _ in range(80):
+            x = rng.randint(0, WIDTH - 1)
+            y = rng.randint(0, sand_top - 1)
+            r = rng.choice((1, 1, 1, 2))
+            pygame.draw.circle(surface, (245, 240, 250), (x, y), r)
 
 
 def draw_net(surface: pygame.Surface) -> None:
@@ -816,11 +858,14 @@ def draw_particles(surface: pygame.Surface) -> None:
         surface.blit(surf, (int(p.x - r), int(p.y - r)))
 
 
-SHAKE_STRONG = "strong"
-SHAKE_MEDIUM = "medium"
-SHAKE_WEAK   = "weak"
-SHAKE_OFF    = "off"
+# Prefix with 'shake_' so click-handler doesn't collide with DIFF_MEDIUM etc.
+SHAKE_STRONG = "shake_strong"
+SHAKE_MEDIUM = "shake_medium"
+SHAKE_WEAK   = "shake_weak"
+SHAKE_OFF    = "shake_off"
 _SHAKE_SCALES = {SHAKE_STRONG: 1.0, SHAKE_MEDIUM: 0.6, SHAKE_WEAK: 0.2, SHAKE_OFF: 0.0}
+_LEGACY_SHAKE = {"strong": SHAKE_STRONG, "medium": SHAKE_MEDIUM,
+                 "weak": SHAKE_WEAK, "off": SHAKE_OFF}
 _shake_scale: float = 0.6              # matches "Средне" default
 
 
@@ -1039,13 +1084,14 @@ def draw_settings(
     p2_name: str,
     editing: str | None,
     current_shake: str,
+    current_arena: str,
 ) -> dict[str, pygame.Rect]:
     """Compact settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill(INDIGO + (210,))
     surface.blit(overlay, (0, 0))
 
-    panel_w, panel_h = _s(680), _s(600)
+    panel_w, panel_h = _s(680), _s(680)
     panel = pygame.Rect((WIDTH - panel_w) // 2, (HEIGHT - panel_h) // 2, panel_w, panel_h)
     pygame.draw.rect(surface, CELADON, panel, border_radius=_s(16))
     pygame.draw.rect(surface, INDIGO, panel, width=_s(3), border_radius=_s(16))
@@ -1097,6 +1143,15 @@ def draw_settings(
         [(SHAKE_STRONG, "Сильно"), (SHAKE_MEDIUM, "Средне"),
          (SHAKE_WEAK, "Слабо"), (SHAKE_OFF, "Выкл")],
         current_shake, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
+    )
+
+    row_y += label_h + btn_h + section_gap
+    section_label("Арена", row_y)
+    _draw_button_row(
+        surface, text_font,
+        [(ARENA_BEACH, "Пляж"), (ARENA_ARCTIC, "Арктика"),
+         (ARENA_JUNGLE, "Джунгли"), (ARENA_SPACE, "Космос")],
+        current_arena, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
     )
 
     row_y += label_h + btn_h + section_gap
@@ -1326,9 +1381,9 @@ def main() -> int:
     text_font = pygame.font.SysFont("arial", _s(22), bold=True)
     hint_font = pygame.font.SysFont("arial", _s(18), bold=False)
 
-    # Pre-render background
+    # Pre-render background — arena is loaded later from prefs and re-rendered
     background = pygame.Surface((WIDTH, HEIGHT))
-    render_background(background)
+    render_background(background)   # placeholder; refreshed after prefs load
 
     # Off-screen render target — everything draws here; then blitted to `screen`
     # with an optional shake offset so hard hits kick the whole scene.
@@ -1363,11 +1418,15 @@ def main() -> int:
     game_mode     = prefs.get("game_mode",  MODE_DUO)
     ai_difficulty = prefs.get("ai_difficulty", DIFF_MEDIUM)
     shake_preset  = prefs.get("shake", SHAKE_MEDIUM)
+    shake_preset  = _LEGACY_SHAKE.get(shake_preset, shake_preset)   # migrate old bare names
     if input_mode    not in (INPUT_AUTO, INPUT_KEYBOARD, INPUT_GAMEPAD): input_mode    = INPUT_AUTO
     if game_mode     not in (MODE_DUO, MODE_AI):                         game_mode     = MODE_DUO
     if ai_difficulty not in (DIFF_EASY, DIFF_MEDIUM, DIFF_HARD):         ai_difficulty = DIFF_MEDIUM
     if shake_preset  not in _SHAKE_SCALES:                               shake_preset  = SHAKE_MEDIUM
     set_shake_preset(shake_preset)
+    current_arena = prefs.get("arena", ARENA_BEACH)
+    if current_arena not in ARENAS: current_arena = ARENA_BEACH
+    render_background(background, current_arena)
     global _muted
     _muted = bool(prefs.get("muted", False))
     ai_state = AIState()
@@ -1381,7 +1440,7 @@ def main() -> int:
             "p1_name": p1.name, "p2_name": p2.name,
             "input_mode": input_mode, "game_mode": game_mode,
             "ai_difficulty": ai_difficulty, "muted": _muted,
-            "shake": shake_preset,
+            "shake": shake_preset, "arena": current_arena,
         })
 
     # Hit-stop is a module-level counter we mutate from the main loop
@@ -1415,6 +1474,10 @@ def main() -> int:
                             elif key in _SHAKE_SCALES:
                                 shake_preset = key
                                 set_shake_preset(shake_preset)
+                                _save_prefs()
+                            elif key in ARENAS:
+                                current_arena = key
+                                render_background(background, current_arena)
                                 _save_prefs()
                             elif key in ("edit_p1", "edit_p2"):
                                 if editing_name:
@@ -1600,7 +1663,7 @@ def main() -> int:
             settings_rects = draw_settings(
                 world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
-                p1.name, p2.name, editing_name, shake_preset,
+                p1.name, p2.name, editing_name, shake_preset, current_arena,
             )
         else:
             settings_rects = {}
