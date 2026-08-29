@@ -932,7 +932,32 @@ def request_hitstop(frames: int = 4) -> None:
 SFX_SAMPLE_RATE = 44100
 SFX: dict = {}
 _audio_ok = False
-_muted = False
+
+VOL_OFF  = "vol_off"
+VOL_LOW  = "vol_low"
+VOL_MED  = "vol_med"
+VOL_HIGH = "vol_high"
+_VOLUME_SCALES = {VOL_OFF: 0.0, VOL_LOW: 0.3, VOL_MED: 0.6, VOL_HIGH: 1.0}
+_VOLUME_ORDER  = (VOL_OFF, VOL_LOW, VOL_MED, VOL_HIGH)
+_volume_preset = VOL_MED
+_volume_scale = _VOLUME_SCALES[VOL_MED]
+
+
+def set_volume_preset(preset: str) -> None:
+    global _volume_preset, _volume_scale
+    if preset not in _VOLUME_SCALES:
+        preset = VOL_MED
+    _volume_preset = preset
+    _volume_scale = _VOLUME_SCALES[preset]
+    if _volume_scale == 0.0:
+        pygame.mixer.stop()
+
+
+def cycle_volume_preset() -> str:
+    """Advance preset OFF → LOW → MED → HIGH → OFF. Returns new preset id."""
+    i = _VOLUME_ORDER.index(_volume_preset) if _volume_preset in _VOLUME_ORDER else 2
+    set_volume_preset(_VOLUME_ORDER[(i + 1) % len(_VOLUME_ORDER)])
+    return _volume_preset
 
 
 def _synth_pcm(gen, dur_s: float, env=None, amp: float = 0.6) -> bytes:
@@ -1002,22 +1027,14 @@ def _init_sfx() -> None:
 
 
 def sfx_play(name: str, volume: float = 1.0) -> None:
-    if not _audio_ok or _muted:
+    if not _audio_ok or _volume_scale <= 0.0:
         return
     s = SFX.get(name)
     if s is None:
         return
     ch = s.play()
     if ch is not None:
-        ch.set_volume(max(0.0, min(1.0, volume)))
-
-
-def sfx_toggle_mute() -> bool:
-    global _muted
-    _muted = not _muted
-    if _muted:
-        pygame.mixer.stop()
-    return _muted
+        ch.set_volume(max(0.0, min(1.0, volume * _volume_scale)))
 
 
 # ---------- Settings persistence ----------
@@ -1122,6 +1139,7 @@ def draw_settings(
     p1_color_id: str,
     p2_color_id: str,
     current_tab: str,
+    current_volume: str,
 ) -> dict[str, pygame.Rect]:
     """Tabbed settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1205,6 +1223,14 @@ def draw_settings(
             [(SHAKE_STRONG, "Сильно"), (SHAKE_MEDIUM, "Средне"),
              (SHAKE_WEAK, "Слабо"), (SHAKE_OFF, "Выкл")],
             current_shake, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
+        )
+        row_y += label_h + btn_h + section_gap
+        section_label("Громкость (M — быстрое переключение)", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [(VOL_HIGH, "Громко"), (VOL_MED, "Средне"),
+             (VOL_LOW, "Тихо"), (VOL_OFF, "Выкл")],
+            current_volume, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
         )
     elif current_tab == TAB_PLAYERS:
         section_label("Никнеймы (клик по полю для редактирования)", row_y)
@@ -1514,8 +1540,10 @@ def main() -> int:
     if p2_color_id not in color_ids: p2_color_id = "cerulean"
     p1.slime.color = _color_by_id(p1_color_id, P1_COLOR)
     p2.slime.color = _color_by_id(p2_color_id, P2_COLOR)
-    global _muted
-    _muted = bool(prefs.get("muted", False))
+    volume_preset = prefs.get("volume")
+    if volume_preset not in _VOLUME_SCALES:
+        volume_preset = VOL_OFF if prefs.get("muted") else VOL_MED
+    set_volume_preset(volume_preset)
     ai_state = AIState()
     gear_rect = pygame.Rect(0, 0, 0, 0)
     settings_rects: dict = {}
@@ -1526,7 +1554,8 @@ def main() -> int:
         save_settings({
             "p1_name": p1.name, "p2_name": p2.name,
             "input_mode": input_mode, "game_mode": game_mode,
-            "ai_difficulty": ai_difficulty, "muted": _muted,
+            "ai_difficulty": ai_difficulty,
+            "volume": volume_preset,
             "shake": shake_preset, "arena": current_arena,
             "p1_color": p1_color_id, "p2_color": p2_color_id,
         })
@@ -1564,6 +1593,10 @@ def main() -> int:
                             elif key in _SHAKE_SCALES:
                                 shake_preset = key
                                 set_shake_preset(shake_preset)
+                                _save_prefs()
+                            elif key in _VOLUME_SCALES:
+                                volume_preset = key
+                                set_volume_preset(volume_preset)
                                 _save_prefs()
                             elif key in ARENAS:
                                 current_arena = key
@@ -1625,7 +1658,8 @@ def main() -> int:
                 elif event.key == pygame.K_p:
                     paused = not paused
                 elif event.key == pygame.K_m:
-                    sfx_toggle_mute(); _save_prefs()
+                    volume_preset = cycle_volume_preset()
+                    _save_prefs()
                 elif event.key == pygame.K_SPACE and in_menu:
                     in_menu = False
                 elif event.key == pygame.K_SPACE and awaiting_continue:
@@ -1790,7 +1824,7 @@ def main() -> int:
                 world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
                 p1.name, p2.name, editing_name, shake_preset, current_arena,
-                p1_color_id, p2_color_id, settings_tab,
+                p1_color_id, p2_color_id, settings_tab, volume_preset,
             )
         else:
             settings_rects = {}
