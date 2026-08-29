@@ -536,9 +536,62 @@ def _get_slime_sprite(color: tuple) -> pygame.Surface:
     return sprite
 
 
+def _draw_arm(surface: pygame.Surface, shoulder: tuple, direction: tuple,
+              length: float, thickness: int, color: tuple) -> None:
+    """AA-rendered arm: quad shaft with rounded caps."""
+    ax, ay = shoulder
+    nx, ny = direction
+    n = math.hypot(nx, ny)
+    if n > 0:
+        nx, ny = nx / n, ny / n
+    bx, by = ax + nx * length, ay + ny * length
+    px, py = -ny, nx                          # perpendicular unit vector
+    r = thickness / 2.0
+    corners = [
+        (ax + px * r, ay + py * r),
+        (bx + px * r, by + py * r),
+        (bx - px * r, by - py * r),
+        (ax - px * r, ay - py * r),
+    ]
+    aa_polygon(surface, color, corners)
+    ir = max(1, int(round(r)))
+    aa_circle(surface, color, (int(round(ax)), int(round(ay))), ir)
+    aa_circle(surface, color, (int(round(bx)), int(round(by))), ir)
+
+
+# Arm direction vectors per pose (x is +right, y is +down)
+_ARM_IDLE_L   = (-0.70, +0.72)
+_ARM_IDLE_R   = (+0.70, +0.72)
+_ARM_RAISED_L = (-0.95, -0.30)
+_ARM_RAISED_R = (+0.95, -0.30)
+_ARM_JUMP_L   = (-0.18, +1.00)
+_ARM_JUMP_R   = (+0.18, +1.00)
+
+
+def _draw_slime_arms(surface: pygame.Surface, slime: Slime) -> None:
+    half_w = (SLIME_W / 2) * (1.0 + slime.squish)
+    shoulder_l = (slime.x - half_w, slime.y)
+    shoulder_r = (slime.x + half_w, slime.y)
+    length = SLIME_W * 0.24
+    thickness = max(6, int(SLIME_H * 0.34))
+
+    if not slime.on_ground:
+        dir_l, dir_r = _ARM_JUMP_L, _ARM_JUMP_R
+    elif slime.vx < -40.0:
+        dir_l, dir_r = _ARM_RAISED_L, _ARM_IDLE_R
+    elif slime.vx > 40.0:
+        dir_l, dir_r = _ARM_IDLE_L, _ARM_RAISED_R
+    else:
+        dir_l, dir_r = _ARM_IDLE_L, _ARM_IDLE_R
+
+    _draw_arm(surface, shoulder_l, dir_l, length, thickness, slime.color)
+    _draw_arm(surface, shoulder_r, dir_r, length, thickness, slime.color)
+
+
 def draw_slime(surface: pygame.Surface, slime: Slime) -> None:
     """Flat dome from Slime.svg — cached supersampled sprite for smooth edges.
-    Non-uniform scale per frame applies the current jelly squish (foot stays anchored)."""
+    Non-uniform scale per frame applies the current jelly squish (foot stays anchored).
+    Arms are drawn on top based on motion state."""
     sprite = _get_slime_sprite(slime.color)
     if abs(slime.squish) > 0.001:
         w, h = sprite.get_width(), sprite.get_height()
@@ -548,6 +601,7 @@ def draw_slime(surface: pygame.Surface, slime: Slime) -> None:
     rect = sprite.get_rect()
     rect.midbottom = (int(round(slime.x)), int(round(slime.y)))
     surface.blit(sprite, rect)
+    _draw_slime_arms(surface, slime)
 
 
 _ball_sprite_cache: dict = {}
