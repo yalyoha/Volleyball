@@ -1746,6 +1746,63 @@ def _swap_slime_sides(a: Slime, b: Slime) -> None:
     a.vy = b.vy = 0.0
 
 
+def _swap_slime_bounds(a: Slime, b: Slime) -> None:
+    """Swap only the bounds — positions are already at the destination
+    (used at the end of the swap-sides hop animation)."""
+    a.left_bound,  b.left_bound  = b.left_bound,  a.left_bound
+    a.right_bound, b.right_bound = b.right_bound, a.right_bound
+    a.vx = b.vx = 0.0
+    a.vy = b.vy = 0.0
+
+
+SWAP_ANIM_DUR = 0.75           # seconds — length of the hop-over animation
+# Peak arc height chosen so the slime's foot clears the net top by a margin
+SWAP_ANIM_HOP_H = (GROUND_FOOT_Y - NET_TOP_Y) + _s(40)
+
+
+def start_swap_anim(p1_slime: Slime, p2_slime: Slime) -> dict:
+    """Snapshot start positions and return an animation state dict."""
+    return {
+        "t": 0.0,
+        "p1_from": p1_slime.x, "p1_to": p2_slime.x,
+        "p2_from": p2_slime.x, "p2_to": p1_slime.x,
+    }
+
+
+def update_swap_anim(swap: dict, dt: float, p1_slime: Slime, p2_slime: Slime) -> bool:
+    """Advance the swap-sides animation. Returns True when finished.
+    Writes x/y directly (bypassing bounds — they haven't been swapped yet)."""
+    swap["t"] = min(1.0, swap["t"] + dt / SWAP_ANIM_DUR)
+    t = swap["t"]
+    # Cosine ease-in-out for x — starts and ends softly, snappy middle
+    te = 0.5 - 0.5 * math.cos(t * math.pi)
+    p1_slime.x = swap["p1_from"] + (swap["p1_to"] - swap["p1_from"]) * te
+    p2_slime.x = swap["p2_from"] + (swap["p2_to"] - swap["p2_from"]) * te
+    # Symmetric parabolic hop for both slimes
+    hop = SWAP_ANIM_HOP_H * math.sin(t * math.pi)
+    p1_slime.y = GROUND_FOOT_Y - hop
+    p2_slime.y = GROUND_FOOT_Y - hop
+    airborne = t < 1.0
+    p1_slime.on_ground = not airborne
+    p2_slime.on_ground = not airborne
+    # Signed vx so _slime_arm_targets picks the "running" arm pose in flight
+    dir1 = swap["p1_to"] - swap["p1_from"]
+    dir2 = swap["p2_to"] - swap["p2_from"]
+    speed = 200.0 if airborne else 0.0
+    p1_slime.vx = math.copysign(speed, dir1) if dir1 else 0.0
+    p2_slime.vx = math.copysign(speed, dir2) if dir2 else 0.0
+    p1_slime.vy = p2_slime.vy = 0.0
+    # Lerp arm directions toward the current target pose (update() isn't running)
+    s = 1.0 - math.exp(-ARM_SMOOTH_K * dt)
+    for slime in (p1_slime, p2_slime):
+        target_l, target_r = _slime_arm_targets(slime)
+        slime.arm_dir_l = (slime.arm_dir_l[0] + (target_l[0] - slime.arm_dir_l[0]) * s,
+                           slime.arm_dir_l[1] + (target_l[1] - slime.arm_dir_l[1]) * s)
+        slime.arm_dir_r = (slime.arm_dir_r[0] + (target_r[0] - slime.arm_dir_r[0]) * s,
+                           slime.arm_dir_r[1] + (target_r[1] - slime.arm_dir_r[1]) * s)
+    return t >= 1.0
+
+
 def serve(ball: Ball, side: int) -> None:
     ball.frozen = True
     ball.x = WIDTH * (0.25 if side == 0 else 0.75)
@@ -1825,6 +1882,7 @@ def main() -> int:
     editing_name: str | None = None      # 'p1' | 'p2' | None — text-input target
     star_toast: dict | None = None       # {'name': str, 'kind': 'game' | 'match'}
     awaiting_continue: bool = False      # after a star, wait for A/Space before swapping sides + serving
+    swap_anim: dict | None = None        # active swap-sides hop animation state
     input_mode    = prefs.get("input_mode", INPUT_AUTO)
     game_mode     = prefs.get("game_mode",  MODE_DUO)
     ai_difficulty = prefs.get("ai_difficulty", DIFF_MEDIUM)
@@ -1983,11 +2041,9 @@ def main() -> int:
                 elif event.key == pygame.K_SPACE and in_menu:
                     in_menu = False
                 elif event.key == pygame.K_SPACE and awaiting_continue:
-                    # swap sides — swap positions/bounds so each player keeps their color
-                    _swap_slime_sides(p1.slime, p2.slime)
+                    # Start the side-swap hop animation (bounds swap + serve happen on completion)
+                    swap_anim = start_swap_anim(p1.slime, p2.slime)
                     serve_side = 1 - serve_side
-                    serve(ball, serve_side)
-                    serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
                     awaiting_continue = False
                     star_toast = None
                 elif event.key == pygame.K_r or (
@@ -2004,10 +2060,8 @@ def main() -> int:
                     in_menu = False
                     continue
                 if event.button == BTN_A and awaiting_continue:
-                    _swap_slime_sides(p1.slime, p2.slime)
+                    swap_anim = start_swap_anim(p1.slime, p2.slime)
                     serve_side = 1 - serve_side
-                    serve(ball, serve_side)
-                    serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
                     awaiting_continue = False
                     star_toast = None
                     continue
@@ -2040,12 +2094,20 @@ def main() -> int:
         keys = pygame.key.get_pressed()
 
         if (_hitstop_frames > 0 and not paused and not game_over
-                and not settings_open and not awaiting_continue):
+                and not settings_open and not awaiting_continue
+                and swap_anim is None):
             _hitstop_frames -= 1
+
+        if swap_anim is not None and not paused and not settings_open:
+            if update_swap_anim(swap_anim, dt, p1.slime, p2.slime):
+                _swap_slime_bounds(p1.slime, p2.slime)
+                serve(ball, serve_side)
+                serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
+                swap_anim = None
 
         if (not paused and not game_over and not settings_open
                 and _hitstop_frames == 0 and not awaiting_continue
-                and not in_menu):
+                and swap_anim is None and not in_menu):
             # Serve delay
             if ball.frozen and pygame.time.get_ticks() >= serve_timer:
                 ball.frozen = False
