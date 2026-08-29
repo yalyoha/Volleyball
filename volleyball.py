@@ -764,13 +764,16 @@ def _get_ball_glow() -> pygame.Surface:
     r = BALL_R * 2
     size = r * 2
     surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    # Warm off-white for real contrast against the celadon sky (plain BALL_LIGHT
+    # blends too closely with it under alpha-blit).
+    glow_color = (0xFF, 0xF3, 0xC8)
     # Concentric filled circles, alpha peaks at center — cheap radial gradient.
     for i in range(r, 0, -1):
         t = 1.0 - i / r                # 0 at edge, 1 at center
-        a = int(70 * (t * t))          # quadratic falloff, soft halo
+        a = int(190 * (t * t))         # quadratic falloff, soft halo
         if a <= 0:
             continue
-        pygame.draw.circle(surf, (*BALL_LIGHT, a), (r, r), i)
+        pygame.draw.circle(surf, (*glow_color, a), (r, r), i)
     _ball_glow_cache = surf
     return _ball_glow_cache
 
