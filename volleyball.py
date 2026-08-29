@@ -60,8 +60,8 @@ SQUISH_PER_HIT_DOT = 1.5e-4             # squash per unit of ball impact normal 
 # Slime arm poses (unit direction vectors, +x right, +y down)
 _ARM_IDLE_L   = (-0.70, +0.72)
 _ARM_IDLE_R   = (+0.70, +0.72)
-_ARM_RAISED_L = (-0.95, -0.30)
-_ARM_RAISED_R = (+0.95, -0.30)
+_ARM_RAISED_L = (-1.00, 0.00)          # exactly horizontal — no lifting above the shoulder
+_ARM_RAISED_R = (+1.00, 0.00)
 _ARM_JUMP_L   = (-0.18, +1.00)
 _ARM_JUMP_R   = (+0.18, +1.00)
 ARM_SMOOTH_K = 8.0                      # exp-smoothing rate for arm animation (larger = snappier)
@@ -218,7 +218,9 @@ class Slime:
                 if landing_vy > 200.0:
                     sfx_play("land", volume=min(1.0, landing_vy / 1400.0))
                     emit_dust(self.x, GROUND_FOOT_Y, landing_vy)
-        half_w = SLIME_W / 2
+        # With arms enabled, expand the effective radius by max arm reach so a
+        # horizontally-raised arm doesn't cross the net / court boundaries.
+        half_w = SLIME_W / 2 + (SLIME_W * 0.24 if _arms_enabled else 0.0)
         self.x = max(self.left_bound + half_w, min(self.right_bound - half_w, self.x))
 
         # Damped spring pulling squish back to 0
@@ -1597,6 +1599,16 @@ def make_players(controllers: list) -> tuple[Player, Player]:
     return p1, p2
 
 
+def _swap_slime_sides(a: Slime, b: Slime) -> None:
+    """Swap the two slimes' physical sides — positions, bounds, momentum.
+    Colors, names and other identity fields stay with their owning Player."""
+    a.x, b.x = b.x, a.x
+    a.left_bound,  b.left_bound  = b.left_bound,  a.left_bound
+    a.right_bound, b.right_bound = b.right_bound, a.right_bound
+    a.vx = b.vx = 0.0
+    a.vy = b.vy = 0.0
+
+
 def serve(ball: Ball, side: int) -> None:
     ball.frozen = True
     ball.x = WIDTH * (0.25 if side == 0 else 0.75)
@@ -1827,8 +1839,8 @@ def main() -> int:
                 elif event.key == pygame.K_SPACE and in_menu:
                     in_menu = False
                 elif event.key == pygame.K_SPACE and awaiting_continue:
-                    # swap sides, serve to loser's new side
-                    p1.slime, p2.slime = p2.slime, p1.slime
+                    # swap sides — swap positions/bounds so each player keeps their color
+                    _swap_slime_sides(p1.slime, p2.slime)
                     serve_side = 1 - serve_side
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
@@ -1848,7 +1860,7 @@ def main() -> int:
                     in_menu = False
                     continue
                 if event.button == BTN_A and awaiting_continue:
-                    p1.slime, p2.slime = p2.slime, p1.slime
+                    _swap_slime_sides(p1.slime, p2.slime)
                     serve_side = 1 - serve_side
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
