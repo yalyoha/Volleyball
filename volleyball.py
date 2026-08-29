@@ -14,6 +14,8 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 
+import json
+
 import pygame
 from pygame import gfxdraw
 from pygame._sdl2 import controller as sdl_controller
@@ -61,6 +63,9 @@ BALLS_PER_GAME = 5
 STARS_PER_MATCH = 3
 STARS_PER_TOURNAMENT = 5
 SERVE_DELAY_MS = 800
+STAR_TOAST_MS = 1400          # how long the "player earned a star" overlay stays on screen
+NAME_MAX_LEN = 12
+DEFAULT_NAMES = ("Игрок 1", "Игрок 2")
 
 # ---- 5-color minimalist palette ----
 INDIGO   = (0x22, 0x2E, 0x50)     # Space Indigo — net, ball dark, digits, text
@@ -211,16 +216,17 @@ class Ball:
 @dataclass
 class Player:
     slime: Slime
+    name: str = "Игрок"
     balls: int = 0            # rallies won in the current game (0..BALLS_PER_GAME-1)
-    big_stars: int = 0        # games won in the current match (0..STARS_PER_MATCH-1)
-    small_stars: int = 0      # matches won in the tournament (0..STARS_PER_TOURNAMENT)
+    game_stars: int = 0       # games won in the current match (0..STARS_PER_MATCH-1)
+    match_stars: int = 0      # matches won in the tournament (0..STARS_PER_TOURNAMENT)
     controller_index: int | None = None
     keys: dict = field(default_factory=dict)   # {'left':..., 'right':..., 'jump':...}
 
     def reset_tournament(self) -> None:
         self.balls = 0
-        self.big_stars = 0
-        self.small_stars = 0
+        self.game_stars = 0
+        self.match_stars = 0
 
 
 # ---------- Input ----------
@@ -690,18 +696,75 @@ def _draw_star_row(surface: pygame.Surface, center_x: float, y: float,
 
 
 def draw_star_hud(surface: pygame.Surface, p1: Player, p2: Player) -> None:
-    """Two rows of stars above each player's half — small (tournament) on top,
-    big (current match) below."""
-    small_size = _s(22)
-    big_size = _s(34)
-    y_small = _s(20)
-    y_big = y_small + small_size + _s(10)
+    """Two rows of stars above each player's half — big (tournament sets) on top,
+    small (current match games) below. Bigger achievement = bigger star."""
+    match_size = _s(34)         # match wins = bigger achievement → bigger star
+    game_size  = _s(22)         # game wins = smaller achievement → smaller star
+    y_match = _s(20)
+    y_game  = y_match + match_size + _s(10)
 
     for cx, player in ((WIDTH * 0.25, p1), (WIDTH * 0.75, p2)):
-        _draw_star_row(surface, cx, y_small, small_size,
-                       STARS_PER_TOURNAMENT, player.small_stars)
-        _draw_star_row(surface, cx, y_big, big_size,
-                       STARS_PER_MATCH, player.big_stars)
+        _draw_star_row(surface, cx, y_match, match_size,
+                       STARS_PER_TOURNAMENT, player.match_stars)
+        _draw_star_row(surface, cx, y_game, game_size,
+                       STARS_PER_MATCH, player.game_stars)
+
+
+def draw_star_toast(surface: pygame.Surface, toast: dict, big_font: pygame.font.Font,
+                    small_font: pygame.font.Font) -> None:
+    """Big central star + '{name}: гейм/сет!' — brief on-earn overlay.
+    toast: {'until_ms': int, 'name': str, 'kind': 'game'|'match'}."""
+    now_ms = pygame.time.get_ticks()
+    remaining = toast["until_ms"] - now_ms
+    if remaining <= 0:
+        return
+    kind = toast["kind"]
+    # Match stars are the bigger achievement — draw them larger.
+    star_px = _s(220 if kind == "match" else 160)
+    label = "сет" if kind == "match" else "гейм"
+    star = _get_star_sprite(star_px, filled=True)
+    # Fade out over the last 300 ms
+    alpha = 255 if remaining > 300 else int(255 * remaining / 300)
+    star = star.copy()
+    star.set_alpha(alpha)
+    rect = star.get_rect(center=(WIDTH // 2, HEIGHT // 2 - _s(30)))
+    surface.blit(star, rect)
+    text = f"{toast['name']}: {label}!"
+    img = big_font.render(text, True, INDIGO)
+    img.set_alpha(alpha)
+    surface.blit(img, ((WIDTH - img.get_width()) // 2, rect.bottom + _s(10)))
+
+
+# ---------- Settings persistence ----------
+
+
+def _settings_dir() -> str:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "BeachVolleyball")
+
+
+def _settings_path() -> str:
+    return os.path.join(_settings_dir(), "settings.json")
+
+
+def load_settings() -> dict:
+    try:
+        with open(_settings_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(d: dict) -> None:
+    try:
+        os.makedirs(_settings_dir(), exist_ok=True)
+        with open(_settings_path(), "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
 
 
 def draw_message(surface: pygame.Surface, font: pygame.font.Font, lines: list[str]) -> None:
@@ -760,14 +823,16 @@ def draw_settings(
     current_game_mode: str,
     current_difficulty: str,
     controller_count: int,
+    p1_name: str,
+    p2_name: str,
+    editing: str | None,          # 'p1' | 'p2' | None
 ) -> dict[str, pygame.Rect]:
     """Draw the settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill(INDIGO + (210,))
     surface.blit(overlay, (0, 0))
 
-    # Panel — taller now to fit two extra rows
-    panel_w, panel_h = _s(760), _s(560)
+    panel_w, panel_h = _s(760), _s(660)
     panel = pygame.Rect((WIDTH - panel_w) // 2, (HEIGHT - panel_h) // 2, panel_w, panel_h)
     pygame.draw.rect(surface, CELADON, panel, border_radius=_s(18))
     pygame.draw.rect(surface, INDIGO, panel, width=_s(4), border_radius=_s(18))
@@ -777,7 +842,6 @@ def draw_settings(
 
     rects: dict[str, pygame.Rect] = {}
 
-    # Section labels + button rows
     def section_label(text: str, y: int) -> None:
         img = hint_font.render(text, True, INDIGO)
         surface.blit(img, (panel.left + _s(30), y))
@@ -809,7 +873,24 @@ def draw_settings(
         enabled=(current_game_mode == MODE_AI),
     )
 
-    # Back button
+    row_y += _s(24) + _s(56) + _s(30)
+    section_label("Никнеймы (клик по полю для редактирования)", row_y)
+    name_y = row_y + _s(24)
+    name_w, name_h = _s(300), _s(52)
+    gap = _s(40)
+    p1_rect = pygame.Rect(panel.centerx - name_w - gap // 2, name_y, name_w, name_h)
+    p2_rect = pygame.Rect(panel.centerx + gap // 2, name_y, name_w, name_h)
+    for key, r, name in (("edit_p1", p1_rect, p1_name), ("edit_p2", p2_rect, p2_name)):
+        is_editing = editing == key.split("_")[1]
+        bg = GOLD if is_editing else CELADON
+        pygame.draw.rect(surface, bg, r, border_radius=_s(10))
+        pygame.draw.rect(surface, INDIGO, r, width=_s(2), border_radius=_s(10))
+        shown = name + ("|" if is_editing else "")
+        img = text_font.render(shown, True, INDIGO)
+        surface.blit(img, (r.centerx - img.get_width() // 2,
+                           r.centery - img.get_height() // 2))
+        rects[key] = r
+
     back = pygame.Rect(panel.centerx - _s(100), panel.bottom - _s(70), _s(200), _s(48))
     pygame.draw.rect(surface, CERULEAN, back, border_radius=_s(10))
     pygame.draw.rect(surface, INDIGO, back, width=_s(2), border_radius=_s(10))
@@ -1015,6 +1096,12 @@ def main() -> int:
             controllers.append(sdl_controller.Controller(i))
 
     p1, p2 = make_players(controllers)
+
+    # Persisted settings — nicknames, etc.
+    prefs = load_settings()
+    p1.name = str(prefs.get("p1_name", DEFAULT_NAMES[0]))[:NAME_MAX_LEN] or DEFAULT_NAMES[0]
+    p2.name = str(prefs.get("p2_name", DEFAULT_NAMES[1]))[:NAME_MAX_LEN] or DEFAULT_NAMES[1]
+
     ball = Ball()
     serve_side = 0
     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
@@ -1024,12 +1111,17 @@ def main() -> int:
     game_over = False
     winner_msg = ""
     settings_open = False
+    editing_name: str | None = None      # 'p1' | 'p2' | None — text-input target
+    star_toast: dict | None = None       # {'until_ms': int, 'name': str, 'kind': 'game'|'match'}
     input_mode = INPUT_AUTO
     game_mode = MODE_DUO
     ai_difficulty = DIFF_MEDIUM
     ai_state = AIState()
     gear_rect = pygame.Rect(0, 0, 0, 0)
     settings_rects: dict = {}
+
+    def _save_prefs() -> None:
+        save_settings({"p1_name": p1.name, "p2_name": p2.name})
 
     running = True
     frames_run = 0
@@ -1043,9 +1135,12 @@ def main() -> int:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 if settings_open:
+                    clicked_field = False
                     for key, rect in settings_rects.items():
                         if rect.collidepoint(mx, my):
                             if key == "back":
+                                if editing_name:
+                                    _save_prefs(); pygame.key.stop_text_input(); editing_name = None
                                 settings_open = False
                             elif key in (INPUT_AUTO, INPUT_KEYBOARD, INPUT_GAMEPAD):
                                 input_mode = key
@@ -1053,10 +1148,36 @@ def main() -> int:
                                 game_mode = key
                             elif key in (DIFF_EASY, DIFF_MEDIUM, DIFF_HARD):
                                 ai_difficulty = key
+                            elif key in ("edit_p1", "edit_p2"):
+                                if editing_name:
+                                    _save_prefs()
+                                editing_name = "p1" if key == "edit_p1" else "p2"
+                                pygame.key.start_text_input()
+                                clicked_field = True
                             break
+                    if not clicked_field and editing_name:
+                        _save_prefs(); pygame.key.stop_text_input(); editing_name = None
                 elif gear_rect.collidepoint(mx, my):
                     settings_open = True
+            elif event.type == pygame.TEXTINPUT and editing_name:
+                target = p1 if editing_name == "p1" else p2
+                if len(target.name) < NAME_MAX_LEN:
+                    target.name = target.name + event.text
             elif event.type == pygame.KEYDOWN:
+                if editing_name:
+                    target = p1 if editing_name == "p1" else p2
+                    if event.key == pygame.K_BACKSPACE:
+                        target.name = target.name[:-1]
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE):
+                        if not target.name:
+                            target.name = DEFAULT_NAMES[0 if editing_name == "p1" else 1]
+                        _save_prefs()
+                        pygame.key.stop_text_input()
+                        editing_name = None
+                        if event.key == pygame.K_ESCAPE:
+                            # Don't also treat Esc as exit-fullscreen while editing
+                            continue
+                    continue
                 if event.key == pygame.K_ESCAPE:
                     if settings_open:
                         settings_open = False
@@ -1140,15 +1261,18 @@ def main() -> int:
                 if winner.balls >= BALLS_PER_GAME:
                     winner.balls = 0
                     loser.balls = 0
-                    winner.big_stars += 1
-                    if winner.big_stars >= STARS_PER_MATCH:
-                        winner.big_stars = 0
-                        loser.big_stars = 0
-                        winner.small_stars += 1
-                        if winner.small_stars >= STARS_PER_TOURNAMENT:
+                    winner.game_stars += 1
+                    star_toast = {"until_ms": pygame.time.get_ticks() + STAR_TOAST_MS,
+                                  "name": winner.name, "kind": "game"}
+                    if winner.game_stars >= STARS_PER_MATCH:
+                        winner.game_stars = 0
+                        loser.game_stars = 0
+                        winner.match_stars += 1
+                        star_toast = {"until_ms": pygame.time.get_ticks() + STAR_TOAST_MS,
+                                      "name": winner.name, "kind": "match"}
+                        if winner.match_stars >= STARS_PER_TOURNAMENT:
                             game_over = True
-                            player_num = 1 if winner is p1 else 2
-                            winner_msg = f"Игрок {player_num} выиграл турнир!"
+                            winner_msg = f"{winner.name} выиграл турнир!"
                 if not game_over:
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
@@ -1163,6 +1287,13 @@ def main() -> int:
         draw_star_hud(screen, p1, p2)
         gear_rect = draw_gear_icon(screen)
 
+        # On-earn star overlay (fades over the last 300 ms of its lifetime)
+        if star_toast is not None:
+            if pygame.time.get_ticks() >= star_toast["until_ms"]:
+                star_toast = None
+            else:
+                draw_star_toast(screen, star_toast, msg_font, text_font)
+
         if paused:
             draw_message(screen, msg_font, ["PAUSED", "Press P to resume"])
         elif game_over:
@@ -1172,6 +1303,7 @@ def main() -> int:
             settings_rects = draw_settings(
                 screen, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
+                p1.name, p2.name, editing_name,
             )
         else:
             settings_rects = {}
