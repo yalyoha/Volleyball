@@ -7,14 +7,15 @@ Run:  python volleyball.py
 
 from __future__ import annotations
 
+import array
+import json
 import math
 import os
+import random
 import re
 import sys
 import tempfile
 from dataclasses import dataclass, field
-
-import json
 
 import pygame
 from pygame import gfxdraw
@@ -169,6 +170,7 @@ class Slime:
             self.on_ground = False
             self.squish = -SQUISH_JUMP        # anticipation stretch
             self.squish_v = 0.0
+            sfx_play("jump", volume=0.7)
         self.vy += GRAVITY * dt
         self.x += self.vx * dt
         self.y += self.vy * dt
@@ -179,6 +181,8 @@ class Slime:
             if not self.on_ground:
                 self.on_ground = True
                 self.squish += min(SQUISH_CAP, max(0.0, landing_vy * SQUISH_PER_LAND_VY))
+                if landing_vy > 200.0:
+                    sfx_play("land", volume=min(1.0, landing_vy / 1400.0))
         half_w = SLIME_W / 2
         self.x = max(self.left_bound + half_w, min(self.right_bound - half_w, self.x))
 
@@ -721,7 +725,7 @@ def draw_star_toast(surface: pygame.Surface, toast: dict, big_font: pygame.font.
     kind = toast["kind"]
     # Match stars are the bigger achievement — draw them larger.
     star_px = _s(220 if kind == "match" else 160)
-    label = "сет" if kind == "match" else "гейм"
+    label = "сет" if kind == "match" else "победа"
     star = _get_star_sprite(star_px, filled=True)
     # Fade out over the last 300 ms
     alpha = 255 if remaining > 300 else int(255 * remaining / 300)
@@ -733,6 +737,81 @@ def draw_star_toast(surface: pygame.Surface, toast: dict, big_font: pygame.font.
     img = big_font.render(text, True, INDIGO)
     img.set_alpha(alpha)
     surface.blit(img, ((WIDTH - img.get_width()) // 2, rect.bottom + _s(10)))
+
+
+# ---------- Procedural SFX (no assets, no numpy) ----------
+
+SFX_SAMPLE_RATE = 44100
+SFX: dict = {}
+_audio_ok = False
+_muted = False
+
+
+def _synth_pcm(gen, dur_s: float, env=None, amp: float = 0.6) -> bytes:
+    """Render a mono 16-bit PCM buffer. gen(t)->[-1,1]; env(u in [0,1])->[0,1]."""
+    n = int(SFX_SAMPLE_RATE * dur_s)
+    out = array.array("h", [0] * n)
+    for i in range(n):
+        t = i / SFX_SAMPLE_RATE
+        v = gen(t)
+        e = env(i / n) if env is not None else 1.0
+        s = int(v * e * amp * 32767)
+        if s > 32767: s = 32767
+        elif s < -32768: s = -32768
+        out[i] = s
+    return out.tobytes()
+
+
+def _env_exp(u):     return math.exp(-4.0 * u)
+def _env_pluck(u):   return (u / 0.02) if u < 0.02 else math.exp(-8.0 * (u - 0.02))
+def _sine(f):        return lambda t: math.sin(2 * math.pi * f * t)
+def _square(f):      return lambda t: 1.0 if math.sin(2 * math.pi * f * t) >= 0 else -1.0
+def _noise():        return lambda t: random.random() * 2 - 1
+
+
+def _init_sfx() -> None:
+    """Set up pygame.mixer and bake all sound effects. Silent-fail on headless/no-audio."""
+    global _audio_ok, SFX
+    try:
+        pygame.mixer.init(SFX_SAMPLE_RATE, -16, 1, 512)
+    except pygame.error:
+        _audio_ok = False
+        return
+    _audio_ok = True
+    mk = lambda b: pygame.mixer.Sound(buffer=b)
+    SFX["hit"]     = mk(_synth_pcm(_sine(180),       0.09, _env_pluck, 0.8))
+    SFX["wallhit"] = mk(_synth_pcm(_sine(240),       0.05, _env_exp,   0.4))
+    SFX["land"]    = mk(_synth_pcm(_noise(),         0.12, _env_exp,   0.5))
+    # Jump: quick pitch sweep 200 → 480 Hz
+    SFX["jump"]    = mk(_synth_pcm(
+        lambda t: math.sin(2 * math.pi * (200 + 2800 * t) * t), 0.10, _env_exp, 0.45))
+    SFX["serve"]   = mk(_synth_pcm(_square(800),     0.14, _env_exp,   0.35))
+    SFX["score"]   = mk(_synth_pcm(_sine(660), 0.10, _env_exp, 0.55)
+                      + _synth_pcm(_sine(990), 0.16, _env_exp, 0.55))
+    # Match win: C - E - G - C arpeggio
+    SFX["win"]     = mk(_synth_pcm(_sine(523), 0.14, _env_exp, 0.55)
+                      + _synth_pcm(_sine(659), 0.14, _env_exp, 0.55)
+                      + _synth_pcm(_sine(784), 0.14, _env_exp, 0.55)
+                      + _synth_pcm(_sine(1046), 0.28, _env_exp, 0.55))
+
+
+def sfx_play(name: str, volume: float = 1.0) -> None:
+    if not _audio_ok or _muted:
+        return
+    s = SFX.get(name)
+    if s is None:
+        return
+    ch = s.play()
+    if ch is not None:
+        ch.set_volume(max(0.0, min(1.0, volume)))
+
+
+def sfx_toggle_mute() -> bool:
+    global _muted
+    _muted = not _muted
+    if _muted:
+        pygame.mixer.stop()
+    return _muted
 
 
 # ---------- Settings persistence ----------
@@ -946,9 +1025,10 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     ball.vx = (rvx + slime.vx) * BALL_HIT_BOOST + nx * boost
     ball.vy = (rvy + slime.vy) * BALL_HIT_BOOST + ny * boost
 
-    # Jelly squash at the moment of impact — scales with approach speed
+    # Jelly squash + hit SFX at the moment of impact — scale with approach speed
     if impact > 0.0:
         slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT)
+        sfx_play("hit", volume=min(1.0, 0.35 + impact / 1200.0))
 
     # Never let a slime hit place the ball on the far side of the net band —
     # otherwise the next frame's swept check has no chance to catch it and
@@ -970,16 +1050,22 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
 
 def resolve_ball_walls_and_net(ball: Ball) -> None:
     # Side walls
+    hit_wall = False
     if ball.x < BALL_R:
         ball.x = BALL_R
         ball.vx = abs(ball.vx) * BALL_BOUNCE_DAMP
+        hit_wall = True
     elif ball.x > WIDTH - BALL_R:
         ball.x = WIDTH - BALL_R
         ball.vx = -abs(ball.vx) * BALL_BOUNCE_DAMP
+        hit_wall = True
     # Ceiling
     if ball.y < BALL_R:
         ball.y = BALL_R
         ball.vy = abs(ball.vy) * BALL_BOUNCE_DAMP
+        hit_wall = True
+    if hit_wall:
+        sfx_play("wallhit", volume=0.4)
 
     # Net: pole rectangle (post) with a rounded top cap.
     # Swept side-collision using prev_x — determines which side the ball
@@ -1000,6 +1086,7 @@ def resolve_ball_walls_and_net(ball: Ball) -> None:
             else:
                 ball.x = post_right
                 ball.vx = abs(ball.vx) * BALL_BOUNCE_DAMP
+            sfx_play("wallhit", volume=0.5)
     # Net cap
     dx = ball.x - NET_X
     dy = ball.y - NET_TOP_Y
@@ -1018,6 +1105,7 @@ def resolve_ball_walls_and_net(ball: Ball) -> None:
             ball.vy -= 2 * dot * ny
             ball.vx *= BALL_BOUNCE_DAMP
             ball.vy *= BALL_BOUNCE_DAMP
+            sfx_play("wallhit", volume=0.5)
 
 
 # ---------- Game ----------
@@ -1051,6 +1139,7 @@ def serve(ball: Ball, side: int) -> None:
     ball.y = float(_s(140))
     ball.vx = 0.0
     ball.vy = 0.0
+    sfx_play("serve", volume=0.5)
 
 
 def main() -> int:
@@ -1058,7 +1147,10 @@ def main() -> int:
     # Use anisotropic filtering when SDL upscales the 1080p framebuffer to a
     # higher-DPI monitor. Cleaner than the default linear/nearest filter.
     os.environ.setdefault("SDL_HINT_RENDER_SCALE_QUALITY", "2")
+    # Small mixer buffer for low-latency SFX; must be called BEFORE pygame.init().
+    pygame.mixer.pre_init(SFX_SAMPLE_RATE, -16, 1, 512)
     pygame.init()
+    _init_sfx()
     pygame.display.set_caption("Beach Slime Volleyball")
     # Window icon — resolve icon.png next to the script or inside PyInstaller bundle
     base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -1097,7 +1189,7 @@ def main() -> int:
 
     p1, p2 = make_players(controllers)
 
-    # Persisted settings — nicknames, etc.
+    # Persisted settings — all user-visible options survive restarts.
     prefs = load_settings()
     p1.name = str(prefs.get("p1_name", DEFAULT_NAMES[0]))[:NAME_MAX_LEN] or DEFAULT_NAMES[0]
     p2.name = str(prefs.get("p2_name", DEFAULT_NAMES[1]))[:NAME_MAX_LEN] or DEFAULT_NAMES[1]
@@ -1105,7 +1197,6 @@ def main() -> int:
     ball = Ball()
     serve_side = 0
     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
-    serve(ball, serve_side)
 
     paused = False
     game_over = False
@@ -1113,15 +1204,26 @@ def main() -> int:
     settings_open = False
     editing_name: str | None = None      # 'p1' | 'p2' | None — text-input target
     star_toast: dict | None = None       # {'until_ms': int, 'name': str, 'kind': 'game'|'match'}
-    input_mode = INPUT_AUTO
-    game_mode = MODE_DUO
-    ai_difficulty = DIFF_MEDIUM
+    input_mode    = prefs.get("input_mode", INPUT_AUTO)
+    game_mode     = prefs.get("game_mode",  MODE_DUO)
+    ai_difficulty = prefs.get("ai_difficulty", DIFF_MEDIUM)
+    if input_mode    not in (INPUT_AUTO, INPUT_KEYBOARD, INPUT_GAMEPAD): input_mode    = INPUT_AUTO
+    if game_mode     not in (MODE_DUO, MODE_AI):                         game_mode     = MODE_DUO
+    if ai_difficulty not in (DIFF_EASY, DIFF_MEDIUM, DIFF_HARD):         ai_difficulty = DIFF_MEDIUM
+    global _muted
+    _muted = bool(prefs.get("muted", False))
     ai_state = AIState()
     gear_rect = pygame.Rect(0, 0, 0, 0)
     settings_rects: dict = {}
 
+    serve(ball, serve_side)
+
     def _save_prefs() -> None:
-        save_settings({"p1_name": p1.name, "p2_name": p2.name})
+        save_settings({
+            "p1_name": p1.name, "p2_name": p2.name,
+            "input_mode": input_mode, "game_mode": game_mode,
+            "ai_difficulty": ai_difficulty, "muted": _muted,
+        })
 
     running = True
     frames_run = 0
@@ -1143,11 +1245,11 @@ def main() -> int:
                                     _save_prefs(); pygame.key.stop_text_input(); editing_name = None
                                 settings_open = False
                             elif key in (INPUT_AUTO, INPUT_KEYBOARD, INPUT_GAMEPAD):
-                                input_mode = key
+                                input_mode = key; _save_prefs()
                             elif key in (MODE_DUO, MODE_AI):
-                                game_mode = key
+                                game_mode = key; _save_prefs()
                             elif key in (DIFF_EASY, DIFF_MEDIUM, DIFF_HARD):
-                                ai_difficulty = key
+                                ai_difficulty = key; _save_prefs()
                             elif key in ("edit_p1", "edit_p2"):
                                 if editing_name:
                                     _save_prefs()
@@ -1192,6 +1294,8 @@ def main() -> int:
                     screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
                 elif event.key == pygame.K_p:
                     paused = not paused
+                elif event.key == pygame.K_m:
+                    sfx_toggle_mute(); _save_prefs()
                 elif event.key == pygame.K_r or (
                     game_over and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER)
                 ):
@@ -1257,6 +1361,7 @@ def main() -> int:
                 scored_side = 1 if ball.x < NET_X else 0    # opposite side scores
                 winner, loser = (p1, p2) if scored_side == 0 else (p2, p1)
                 winner.balls += 1
+                sfx_play("score", volume=0.6)
                 serve_side = 0 if scored_side == 1 else 1   # loser serves next
                 if winner.balls >= BALLS_PER_GAME:
                     winner.balls = 0
@@ -1273,6 +1378,7 @@ def main() -> int:
                         if winner.match_stars >= STARS_PER_TOURNAMENT:
                             game_over = True
                             winner_msg = f"{winner.name} выиграл турнир!"
+                            sfx_play("win", volume=0.7)
                 if not game_over:
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
