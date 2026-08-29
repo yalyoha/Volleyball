@@ -57,6 +57,12 @@ SQUISH_JUMP = 0.16                      # anticipation stretch on jump
 SQUISH_PER_LAND_VY = 1.8e-4             # squash per unit of landing vy
 SQUISH_PER_HIT_DOT = 2.4e-4             # squash per unit of ball impact normal speed
 
+# Ball squash-and-stretch — quick pop, one small overshoot, snaps back fast.
+BALL_DEFORM_CAP = 0.28
+BALL_DEFORM_K   = 620.0                 # spring stiffness (snappier than slime)
+BALL_DEFORM_C   = 22.0                  # damping — near-critical, ~1 overshoot
+BALL_DEFORM_PER_HIT = 3.5e-4            # deform per unit of impact normal speed
+
 # Slime arm poses (unit direction vectors, +x right, +y down)
 _ARM_IDLE_L   = (-0.70, +0.72)
 _ARM_IDLE_R   = (+0.70, +0.72)
@@ -196,6 +202,8 @@ class Slime:
     # Animated arm directions (smoothly lerp toward the target pose each frame)
     arm_dir_l: tuple = (-0.70, +0.72)
     arm_dir_r: tuple = (+0.70, +0.72)
+    # Time-since-last run-dust puff (throttles particle emission while running)
+    run_dust_t: float = 0.0
 
     def update(self, dt: float, move: float, jump_pressed: bool) -> None:
         self.vx = move * MOVE_SPEED
@@ -218,6 +226,15 @@ class Slime:
                 if landing_vy > 200.0:
                     sfx_play("land", volume=min(1.0, landing_vy / 1400.0))
                     emit_dust(self.x, GROUND_FOOT_Y, landing_vy)
+
+        # Trail of small dust puffs behind a running slime (on ground only)
+        if self.on_ground and abs(self.vx) > MOVE_SPEED * 0.3:
+            self.run_dust_t -= dt
+            if self.run_dust_t <= 0.0:
+                emit_run_dust(self.x, GROUND_FOOT_Y, self.vx)
+                self.run_dust_t = 0.08
+        else:
+            self.run_dust_t = 0.0
         # With arms enabled, expand the effective radius by max arm reach so a
         # horizontally-raised arm doesn't cross the net / court boundaries.
         half_w = SLIME_W / 2 + (SLIME_W * 0.24 if _arms_enabled else 0.0)
@@ -248,11 +265,16 @@ class Ball:
     frozen: bool = True             # true during serve delay
     prev_x: float = WIDTH * 0.25    # x at start of the current physics step (for swept net collision)
     trail: list = field(default_factory=list)   # recent (x, y) for motion-blur trail
+    # Squash-and-stretch amplitude (0..CAP). Direction of stretch = velocity vector.
+    deform: float = 0.0
+    deform_v: float = 0.0
 
     def update(self, dt: float) -> None:
         self.prev_x = self.x
         if self.frozen:
             self.trail.clear()
+            self.deform = 0.0
+            self.deform_v = 0.0
             return
         self.vy += GRAVITY * dt
         speed = math.hypot(self.vx, self.vy)
@@ -262,6 +284,11 @@ class Ball:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.spin += self.vx * dt * 0.01
+        # Damped spring pulling deform back to 0
+        self.deform_v += (-BALL_DEFORM_K * self.deform - BALL_DEFORM_C * self.deform_v) * dt
+        self.deform   += self.deform_v * dt
+        if self.deform >  BALL_DEFORM_CAP: self.deform =  BALL_DEFORM_CAP; self.deform_v = 0.0
+        if self.deform < -BALL_DEFORM_CAP: self.deform = -BALL_DEFORM_CAP; self.deform_v = 0.0
         # Record trail only when moving noticeably — no trail on slow drops
         if speed > 200.0:
             self.trail.append((self.x, self.y))
@@ -460,6 +487,29 @@ _ARENA_PALETTES = {
 }
 
 
+_sun_halo_cache: dict = {}
+
+
+def _get_sun_halo(inner_r: int, color: tuple) -> pygame.Surface:
+    """Soft additive halo around a sun disc. Halo extends ~2.2× the disc radius."""
+    key = (inner_r, color)
+    cached = _sun_halo_cache.get(key)
+    if cached is not None:
+        return cached
+    outer_r = int(inner_r * 2.2)
+    size = outer_r * 2
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    # Fade from ~90 alpha at the disc edge down to 0 at the outer edge.
+    for i in range(outer_r, inner_r, -1):
+        t = 1.0 - (i - inner_r) / (outer_r - inner_r)   # 0 at outer, 1 at inner
+        a = int(90 * (t * t))
+        if a <= 0:
+            continue
+        pygame.draw.circle(surf, (*color, a), (outer_r, outer_r), i)
+    _sun_halo_cache[key] = surf
+    return surf
+
+
 def render_background(surface: pygame.Surface, arena: str = ARENA_BEACH) -> None:
     """Flat sky above the sand, ground below. Palette follows the arena."""
     sky, ground = _ARENA_PALETTES.get(arena, _ARENA_PALETTES[ARENA_BEACH])
@@ -493,9 +543,15 @@ def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None
             pts = [(cx - w // 2, sand_top), (cx, sand_top - h), (cx + w // 2, sand_top)]
             aa_polygon(surface, mtn, pts)
     elif arena == ARENA_JUNGLE:
-        # A tropical warm sun in the sky
+        # A tropical warm sun in the sky, with a soft additive halo around it
         sun = (0xF7, 0xE6, 0xB3)
-        aa_circle(surface, sun, (int(WIDTH * 0.82), int(HEIGHT * 0.22)), _s(90))
+        sun_cx, sun_cy = int(WIDTH * 0.82), int(HEIGHT * 0.22)
+        sun_r = _s(90)
+        halo = _get_sun_halo(sun_r, sun)
+        hs = halo.get_width() // 2
+        surface.blit(halo, (sun_cx - hs, sun_cy - hs),
+                     special_flags=pygame.BLEND_RGBA_ADD)
+        aa_circle(surface, sun, (sun_cx, sun_cy), sun_r)
     elif arena == ARENA_SPACE:
         # Star field — deterministic (seeded) so it doesn't jitter frame-to-frame
         rng = random.Random(1337)
@@ -717,6 +773,27 @@ SUPERSAMPLE_BALL = 6
 BALL_ROT_FRAMES = 72
 
 _ball_frame_cache: list = []
+_ball_glow_cache: pygame.Surface | None = None
+
+
+def _get_ball_glow() -> pygame.Surface:
+    """Soft additive halo sprite for the ball (BALL_LIGHT, radial falloff).
+    Baked once; sized 4×BALL_R so smoothscale can shrink for trail points."""
+    global _ball_glow_cache
+    if _ball_glow_cache is not None:
+        return _ball_glow_cache
+    r = BALL_R * 2
+    size = r * 2
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    # Concentric filled circles, alpha peaks at center — cheap radial gradient.
+    for i in range(r, 0, -1):
+        t = 1.0 - i / r                # 0 at edge, 1 at center
+        a = int(70 * (t * t))          # quadratic falloff, soft halo
+        if a <= 0:
+            continue
+        pygame.draw.circle(surf, (*BALL_LIGHT, a), (r, r), i)
+    _ball_glow_cache = surf
+    return _ball_glow_cache
 
 
 def _bake_ball_frames() -> list:
@@ -740,21 +817,45 @@ def _bake_ball_frames() -> list:
 
 
 def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
-    # Motion trail behind the ball — older = smaller & more transparent
+    # Additive glow trail — older points shrink; freshness comes from size, so
+    # the pre-baked glow sprite can be blitted as-is with BLEND_RGBA_ADD.
     if ball.trail:
+        glow = _get_ball_glow()
         trail_len = len(ball.trail)
         for i, (tx, ty) in enumerate(ball.trail):
             u = (i + 1) / trail_len            # 0..1, newer → higher
-            alpha = int(70 * u)
-            r = max(1, int(BALL_R * (0.35 + 0.4 * u)))
-            surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-            pygame.draw.circle(surf, (*BALL_LIGHT, alpha), (r, r), r)
-            surface.blit(surf, (int(tx - r), int(ty - r)))
+            r = max(2, int(BALL_R * (0.55 + 0.85 * u)))
+            scaled = pygame.transform.smoothscale(glow, (r * 2, r * 2))
+            surface.blit(scaled, (int(tx - r), int(ty - r)),
+                         special_flags=pygame.BLEND_RGBA_ADD)
     frames = _bake_ball_frames()
     n = len(frames)
     angle_deg = (-math.degrees(ball.spin)) % 360.0
     idx = int(round(angle_deg * n / 360.0)) % n
     frame = frames[idx]
+    # Squash-and-stretch along the velocity vector while deform > threshold.
+    speed_sq = ball.vx * ball.vx + ball.vy * ball.vy
+    if ball.deform > 0.02 and speed_sq > 2500.0:
+        # In pygame screen coords y grows downward, so negate vy for a true
+        # atan2 angle. transform.rotate is counter-clockwise in that same frame.
+        vel_deg = math.degrees(math.atan2(-ball.vy, ball.vx))
+        rotated = pygame.transform.rotate(frame, vel_deg)
+        rw, rh = rotated.get_size()
+        sx = 1.0 + ball.deform
+        sy = max(0.5, 1.0 - ball.deform * 0.65)
+        scaled = pygame.transform.smoothscale(
+            rotated, (max(1, int(round(rw * sx))), max(1, int(round(rh * sy))))
+        )
+        frame = pygame.transform.rotate(scaled, -vel_deg)
+    # Halo under the ball when it's moving — additive, sized by speed.
+    if speed_sq > 40000.0:
+        speed = math.sqrt(speed_sq)
+        k = min(1.0, (speed - 200.0) / 700.0)   # 0 at threshold, 1 fast
+        hr = int(BALL_R * (1.4 + 0.8 * k))
+        halo = pygame.transform.smoothscale(_get_ball_glow(), (hr * 2, hr * 2))
+        surface.blit(halo,
+                     (int(round(ball.x)) - hr, int(round(ball.y)) - hr),
+                     special_flags=pygame.BLEND_RGBA_ADD)
     rect = frame.get_rect(center=(int(round(ball.x)), int(round(ball.y))))
     surface.blit(frame, rect)
 
@@ -946,6 +1047,47 @@ def emit_dust(x: float, y: float, strength: float) -> None:
             max_life=0.65,
             size=random.uniform(_s(2), _s(5)),
             color=SAND,
+        ))
+
+
+def emit_run_dust(x: float, y: float, vx: float) -> None:
+    """Tiny puff of sand kicked back behind a running slime's heel."""
+    heel_x = x - math.copysign(SLIME_W * 0.35, vx)
+    # Base velocity opposite to motion, slightly upward
+    for _ in range(random.randint(1, 3)):
+        _particles.append(Particle(
+            x=heel_x + random.uniform(-_s(4), _s(4)),
+            y=y - random.uniform(0, _s(3)),
+            vx=-vx * random.uniform(0.15, 0.30) + random.uniform(-30, 30),
+            vy=-random.uniform(40, 90),
+            life=random.uniform(0.25, 0.45),
+            max_life=0.45,
+            size=random.uniform(_s(1.5), _s(3.5)),
+            color=SAND,
+        ))
+
+
+def emit_hit_sparks(x: float, y: float, nx: float, ny: float,
+                    color: tuple, impact: float) -> None:
+    """Cone of coloured sparks flying outward along the impact normal (nx, ny).
+    `color` is the slime's color; a few gold accents are mixed in for pop."""
+    n = int(min(18, max(6, impact / 90)))
+    base_speed = min(520.0, 140.0 + impact * 0.35)
+    spread = math.pi / 3     # ±60° cone around the impact normal
+    base_angle = math.atan2(ny, nx)
+    for i in range(n):
+        a = base_angle + random.uniform(-spread, spread)
+        sp = base_speed * random.uniform(0.55, 1.15)
+        c = BALL_LIGHT if random.random() < 0.25 else color
+        _particles.append(Particle(
+            x=x,
+            y=y,
+            vx=math.cos(a) * sp,
+            vy=math.sin(a) * sp,
+            life=random.uniform(0.25, 0.5),
+            max_life=0.5,
+            size=random.uniform(_s(1.5), _s(3.5)),
+            color=c,
         ))
 
 
@@ -1425,7 +1567,10 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     # Jelly squash + hit SFX + optional screen shake at the moment of impact
     if impact > 0.0:
         slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT)
+        ball.deform  = min(BALL_DEFORM_CAP, ball.deform + impact * BALL_DEFORM_PER_HIT)
         sfx_play("hit", volume=min(1.0, 0.35 + impact / 1200.0))
+        emit_hit_sparks(ball.x - nx * BALL_R, ball.y - ny * BALL_R,
+                        nx, ny, slime.color, impact)
         if impact > 700.0:
             # Base "strong" magnitude; add_shake scales by user setting.
             add_shake(min(_s(22), (impact - 700.0) / 60.0))
@@ -1495,7 +1640,10 @@ def resolve_ball_arm(ball: Ball, slime: Slime, shoulder: tuple, direction: tuple
             if ball.vx < 0: ball.vx = -ball.vx * BALL_BOUNCE_DAMP
     if impact > 0.0:
         slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT * 0.7)
+        ball.deform  = min(BALL_DEFORM_CAP, ball.deform + impact * BALL_DEFORM_PER_HIT * 0.8)
         sfx_play("hit", volume=min(1.0, 0.30 + impact / 1400.0))
+        emit_hit_sparks(ball.x - nx * BALL_R, ball.y - ny * BALL_R,
+                        nx, ny, slime.color, impact)
         if impact > 700.0:
             add_shake(min(_s(18), (impact - 700.0) / 90.0))
     return True
