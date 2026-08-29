@@ -568,24 +568,35 @@ _ARM_JUMP_L   = (-0.18, +1.00)
 _ARM_JUMP_R   = (+0.18, +1.00)
 
 
-def _draw_slime_arms(surface: pygame.Surface, slime: Slime) -> None:
+def _slime_arm_geometry(slime: Slime) -> tuple:
+    """Compute shoulder positions, directions, length and thickness for both arms.
+    Shared between draw and collision so they never disagree."""
     half_w = (SLIME_W / 2) * (1.0 + slime.squish)
     shoulder_l = (slime.x - half_w, slime.y)
     shoulder_r = (slime.x + half_w, slime.y)
     length = SLIME_W * 0.24
     thickness = max(6, int(SLIME_H * 0.34))
-
-    if not slime.on_ground:
-        dir_l, dir_r = _ARM_JUMP_L, _ARM_JUMP_R
-    elif slime.vx < -40.0:
-        dir_l, dir_r = _ARM_RAISED_L, _ARM_IDLE_R
+    airborne = not slime.on_ground
+    # Motion overrides airborne — if slime moves left/right in the air, the
+    # corresponding arm still raises. The resting arm hangs (jump-pose) instead
+    # of the ground idle-V, for a bit of extra motion feel.
+    if slime.vx < -40.0:
+        dir_l = _ARM_RAISED_L
+        dir_r = _ARM_JUMP_R if airborne else _ARM_IDLE_R
     elif slime.vx > 40.0:
-        dir_l, dir_r = _ARM_IDLE_L, _ARM_RAISED_R
+        dir_l = _ARM_JUMP_L if airborne else _ARM_IDLE_L
+        dir_r = _ARM_RAISED_R
+    elif airborne:
+        dir_l, dir_r = _ARM_JUMP_L, _ARM_JUMP_R
     else:
         dir_l, dir_r = _ARM_IDLE_L, _ARM_IDLE_R
+    return shoulder_l, shoulder_r, dir_l, dir_r, length, thickness
 
-    _draw_arm(surface, shoulder_l, dir_l, length, thickness, slime.color)
-    _draw_arm(surface, shoulder_r, dir_r, length, thickness, slime.color)
+
+def _draw_slime_arms(surface: pygame.Surface, slime: Slime) -> None:
+    sh_l, sh_r, dir_l, dir_r, length, thickness = _slime_arm_geometry(slime)
+    _draw_arm(surface, sh_l, dir_l, length, thickness, slime.color)
+    _draw_arm(surface, sh_r, dir_r, length, thickness, slime.color)
 
 
 def draw_slime(surface: pygame.Surface, slime: Slime) -> None:
@@ -1409,6 +1420,70 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     return True
 
 
+def resolve_ball_arm(ball: Ball, slime: Slime, shoulder: tuple, direction: tuple,
+                     length: float, thickness: float) -> bool:
+    """Capsule (segment+thickness) collision. Same feel as slime hit + net clamp."""
+    ax, ay = shoulder
+    dx, dy = direction
+    n = math.hypot(dx, dy)
+    if n <= 1e-6:
+        return False
+    dx, dy = dx / n, dy / n
+    # Closest point on segment [A, A + length*dir] to the ball
+    t = (ball.x - ax) * dx + (ball.y - ay) * dy
+    t = max(0.0, min(length, t))
+    cx, cy = ax + dx * t, ay + dy * t
+    rx, ry = ball.x - cx, ball.y - cy
+    d = math.hypot(rx, ry)
+    min_dist = BALL_R + thickness / 2.0
+    if d >= min_dist:
+        return False
+    if d < 1e-6:
+        nx, ny = 0.0, -1.0
+    else:
+        nx, ny = rx / d, ry / d
+    ball.x = cx + nx * min_dist
+    ball.y = cy + ny * min_dist
+    rvx = ball.vx - slime.vx
+    rvy = ball.vy - slime.vy
+    dot = rvx * nx + rvy * ny
+    impact = -dot if dot < 0 else 0.0
+    if dot < 0:
+        rvx -= 2 * dot * nx
+        rvy -= 2 * dot * ny
+    boost = 40.0 * SCALE
+    ball.vx = (rvx + slime.vx) * BALL_HIT_BOOST + nx * boost
+    ball.vy = (rvy + slime.vy) * BALL_HIT_BOOST + ny * boost
+    # Defensive net-clamp — an arm hit on the wrong side must not tunnel
+    if slime.x < NET_X:
+        limit = NET_X - NET_WIDTH // 2 - BALL_R
+        if ball.x > limit:
+            ball.x = limit
+            if ball.vx > 0: ball.vx = -ball.vx * BALL_BOUNCE_DAMP
+    elif slime.x > NET_X:
+        limit = NET_X + NET_WIDTH // 2 + BALL_R
+        if ball.x < limit:
+            ball.x = limit
+            if ball.vx < 0: ball.vx = -ball.vx * BALL_BOUNCE_DAMP
+    if impact > 0.0:
+        slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT * 0.7)
+        sfx_play("hit", volume=min(1.0, 0.30 + impact / 1400.0))
+        if impact > 700.0:
+            add_shake(min(_s(18), (impact - 700.0) / 90.0))
+    return True
+
+
+def resolve_ball_arms(ball: Ball, slime: Slime) -> bool:
+    """Resolve ball vs both arms of the slime using the current arm geometry."""
+    sh_l, sh_r, dir_l, dir_r, length, thickness = _slime_arm_geometry(slime)
+    hit = False
+    if resolve_ball_arm(ball, slime, sh_l, dir_l, length, thickness):
+        hit = True
+    if resolve_ball_arm(ball, slime, sh_r, dir_r, length, thickness):
+        hit = True
+    return hit
+
+
 def resolve_ball_walls_and_net(ball: Ball) -> None:
     # Side walls
     hit_wall = False
@@ -1799,7 +1874,9 @@ def main() -> int:
             ball.update(dt)
             resolve_ball_walls_and_net(ball)
             resolve_ball_slime(ball, p1.slime)
+            resolve_ball_arms(ball, p1.slime)
             resolve_ball_slime(ball, p2.slime)
+            resolve_ball_arms(ball, p2.slime)
 
             # Ground — award the rally and advance the tournament ladder
             if ball.y + BALL_R >= GROUND_FOOT_Y and not ball.frozen:
