@@ -56,6 +56,21 @@ SQUISH_C = 16.0                         # damping (ζ ≈ 0.4 — light bounce)
 SQUISH_JUMP = 0.10                      # anticipation stretch on jump
 SQUISH_PER_LAND_VY = 1.2e-4             # squash per unit of landing vy
 SQUISH_PER_HIT_DOT = 1.5e-4             # squash per unit of ball impact normal speed
+
+# Slime arm poses (unit direction vectors, +x right, +y down)
+_ARM_IDLE_L   = (-0.70, +0.72)
+_ARM_IDLE_R   = (+0.70, +0.72)
+_ARM_RAISED_L = (-0.95, -0.30)
+_ARM_RAISED_R = (+0.95, -0.30)
+_ARM_JUMP_L   = (-0.18, +1.00)
+_ARM_JUMP_R   = (+0.18, +1.00)
+ARM_SMOOTH_K = 8.0                      # exp-smoothing rate for arm animation (larger = snappier)
+_arms_enabled = True                    # toggled from settings (persisted)
+
+
+def set_arms_enabled(v: bool) -> None:
+    global _arms_enabled
+    _arms_enabled = bool(v)
 # Tournament ladder:
 # BALLS_PER_GAME balls per game → 1 big star,
 # STARS_PER_MATCH big stars per match → 1 small star,
@@ -178,6 +193,9 @@ class Slime:
     # squish < 0 = stretched (narrower, taller). Springs back to 0 in update().
     squish: float = 0.0
     squish_v: float = 0.0
+    # Animated arm directions (smoothly lerp toward the target pose each frame)
+    arm_dir_l: tuple = (-0.70, +0.72)
+    arm_dir_r: tuple = (+0.70, +0.72)
 
     def update(self, dt: float, move: float, jump_pressed: bool) -> None:
         self.vx = move * MOVE_SPEED
@@ -208,6 +226,14 @@ class Slime:
         self.squish   += self.squish_v * dt
         if self.squish >  SQUISH_CAP: self.squish =  SQUISH_CAP; self.squish_v = 0.0
         if self.squish < -SQUISH_CAP: self.squish = -SQUISH_CAP; self.squish_v = 0.0
+
+        # Exp-smooth arm directions toward target pose (based on current motion)
+        target_l, target_r = _slime_arm_targets(self)
+        s = 1.0 - math.exp(-ARM_SMOOTH_K * dt)
+        self.arm_dir_l = (self.arm_dir_l[0] + (target_l[0] - self.arm_dir_l[0]) * s,
+                          self.arm_dir_l[1] + (target_l[1] - self.arm_dir_l[1]) * s)
+        self.arm_dir_r = (self.arm_dir_r[0] + (target_r[0] - self.arm_dir_r[0]) * s,
+                          self.arm_dir_r[1] + (target_r[1] - self.arm_dir_r[1]) * s)
 
 
 @dataclass
@@ -559,41 +585,32 @@ def _draw_arm(surface: pygame.Surface, shoulder: tuple, direction: tuple,
     aa_circle(surface, color, (int(round(bx)), int(round(by))), ir)
 
 
-# Arm direction vectors per pose (x is +right, y is +down)
-_ARM_IDLE_L   = (-0.70, +0.72)
-_ARM_IDLE_R   = (+0.70, +0.72)
-_ARM_RAISED_L = (-0.95, -0.30)
-_ARM_RAISED_R = (+0.95, -0.30)
-_ARM_JUMP_L   = (-0.18, +1.00)
-_ARM_JUMP_R   = (+0.18, +1.00)
+def _slime_arm_targets(slime: Slime) -> tuple:
+    """Which pose the arms should be moving toward this frame."""
+    airborne = not slime.on_ground
+    if slime.vx < -40.0:
+        return _ARM_RAISED_L, (_ARM_JUMP_R if airborne else _ARM_IDLE_R)
+    if slime.vx > 40.0:
+        return (_ARM_JUMP_L if airborne else _ARM_IDLE_L), _ARM_RAISED_R
+    if airborne:
+        return _ARM_JUMP_L, _ARM_JUMP_R
+    return _ARM_IDLE_L, _ARM_IDLE_R
 
 
 def _slime_arm_geometry(slime: Slime) -> tuple:
-    """Compute shoulder positions, directions, length and thickness for both arms.
+    """Shoulders + current (animated) arm directions + length + thickness.
     Shared between draw and collision so they never disagree."""
     half_w = (SLIME_W / 2) * (1.0 + slime.squish)
     shoulder_l = (slime.x - half_w, slime.y)
     shoulder_r = (slime.x + half_w, slime.y)
     length = SLIME_W * 0.24
     thickness = max(6, int(SLIME_H * 0.34))
-    airborne = not slime.on_ground
-    # Motion overrides airborne — if slime moves left/right in the air, the
-    # corresponding arm still raises. The resting arm hangs (jump-pose) instead
-    # of the ground idle-V, for a bit of extra motion feel.
-    if slime.vx < -40.0:
-        dir_l = _ARM_RAISED_L
-        dir_r = _ARM_JUMP_R if airborne else _ARM_IDLE_R
-    elif slime.vx > 40.0:
-        dir_l = _ARM_JUMP_L if airborne else _ARM_IDLE_L
-        dir_r = _ARM_RAISED_R
-    elif airborne:
-        dir_l, dir_r = _ARM_JUMP_L, _ARM_JUMP_R
-    else:
-        dir_l, dir_r = _ARM_IDLE_L, _ARM_IDLE_R
-    return shoulder_l, shoulder_r, dir_l, dir_r, length, thickness
+    return shoulder_l, shoulder_r, slime.arm_dir_l, slime.arm_dir_r, length, thickness
 
 
 def _draw_slime_arms(surface: pygame.Surface, slime: Slime) -> None:
+    if not _arms_enabled:
+        return
     sh_l, sh_r, dir_l, dir_r, length, thickness = _slime_arm_geometry(slime)
     _draw_arm(surface, sh_l, dir_l, length, thickness, slime.color)
     _draw_arm(surface, sh_r, dir_r, length, thickness, slime.color)
@@ -1205,6 +1222,7 @@ def draw_settings(
     p2_color_id: str,
     current_tab: str,
     current_volume: str,
+    arms_on: bool,
 ) -> dict[str, pygame.Rect]:
     """Tabbed settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1298,6 +1316,14 @@ def draw_settings(
             current_volume, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
         )
     elif current_tab == TAB_PLAYERS:
+        section_label("Слаймы с руками", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [("arms_on", "Да"), ("arms_off", "Нет")],
+            "arms_on" if arms_on else "arms_off",
+            row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
+        )
+        row_y += label_h + btn_h + section_gap
         section_label("Никнеймы (клик по полю для редактирования)", row_y)
         name_y = row_y + label_h
         name_w, name_h = _s(260), _s(44)
@@ -1475,6 +1501,8 @@ def resolve_ball_arm(ball: Ball, slime: Slime, shoulder: tuple, direction: tuple
 
 def resolve_ball_arms(ball: Ball, slime: Slime) -> bool:
     """Resolve ball vs both arms of the slime using the current arm geometry."""
+    if not _arms_enabled:
+        return False
     sh_l, sh_r, dir_l, dir_r, length, thickness = _slime_arm_geometry(slime)
     hit = False
     if resolve_ball_arm(ball, slime, sh_l, dir_l, length, thickness):
@@ -1662,6 +1690,8 @@ def main() -> int:
     if current_arena not in ARENAS: current_arena = ARENA_BEACH
     render_background(background, current_arena)
 
+    arms_on = bool(prefs.get("arms", True))
+    set_arms_enabled(arms_on)
     color_ids = {cid for cid, *_ in CHARACTER_COLORS}
     p1_color_id = prefs.get("p1_color", "seagrass")
     p2_color_id = prefs.get("p2_color", "cerulean")
@@ -1687,6 +1717,7 @@ def main() -> int:
             "volume": volume_preset,
             "shake": shake_preset, "arena": current_arena,
             "p1_color": p1_color_id, "p2_color": p2_color_id,
+            "arms": arms_on,
         })
 
     # Hit-stop is a module-level counter we mutate from the main loop
@@ -1733,6 +1764,10 @@ def main() -> int:
                                 _save_prefs()
                             elif key in SETTINGS_TABS:
                                 settings_tab = key
+                            elif key in ("arms_on", "arms_off"):
+                                arms_on = (key == "arms_on")
+                                set_arms_enabled(arms_on)
+                                _save_prefs()
                             elif key.startswith("p1color_") or key.startswith("p2color_"):
                                 who, cid = key.split("_", 1)
                                 if who == "p1color":
@@ -1955,7 +1990,7 @@ def main() -> int:
                 world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
                 p1.name, p2.name, editing_name, shake_preset, current_arena,
-                p1_color_id, p2_color_id, settings_tab, volume_preset,
+                p1_color_id, p2_color_id, settings_tab, volume_preset, arms_on,
             )
         else:
             settings_rects = {}
