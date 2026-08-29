@@ -68,6 +68,22 @@ STAR_TOAST_MS = 1400          # how long the "player earned a star" overlay stay
 NAME_MAX_LEN = 12
 DEFAULT_NAMES = ("Игрок 1", "Игрок 2")
 
+# 5 selectable slime colors — 2 originals + 3 fresh. Serialized by short id.
+CHARACTER_COLORS = [
+    ("seagrass", "Мшистый",  (0x43, 0x9A, 0x86)),
+    ("cerulean", "Морской",  (0x00, 0x79, 0x91)),
+    ("coral",    "Пунцовый", (0xE8, 0x6A, 0x5E)),
+    ("plum",     "Сливовый", (0x8B, 0x5A, 0xA1)),
+    ("amber",    "Янтарный", (0xE0, 0x9F, 0x3E)),
+]
+
+
+def _color_by_id(cid: str, default: tuple) -> tuple:
+    for cid_, _label, rgb in CHARACTER_COLORS:
+        if cid_ == cid:
+            return rgb
+    return default
+
 # ---- 5-color minimalist palette ----
 INDIGO   = (0x22, 0x2E, 0x50)     # Space Indigo — net, ball dark, digits, text
 CERULEAN = (0x00, 0x79, 0x91)     # Cerulean — Player 2
@@ -427,7 +443,15 @@ def render_background(surface: pygame.Surface, arena: str = ARENA_BEACH) -> None
 
 def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None:
     """Cheap identity decoration for each arena."""
-    if arena == ARENA_ARCTIC:
+    if arena == ARENA_BEACH:
+        # Fluffy cloud where the jungle sun is — cluster of overlapping circles
+        cloud = (0xF8, 0xFB, 0xFD)
+        cx = int(WIDTH * 0.82)
+        cy = int(HEIGHT * 0.22)
+        for dx, dy, r in ((-58, 6, 30), (0, -4, 40), (58, 4, 32),
+                          (18, -22, 26), (-24, -18, 24)):
+            aa_circle(surface, cloud, (cx + _s(dx), cy + _s(dy)), _s(r))
+    elif arena == ARENA_ARCTIC:
         # Three white mountains in the distance
         mtn = (0xF5, 0xF9, 0xFC)
         for cx_frac, w_frac, h_frac in ((0.20, 0.30, 0.34), (0.50, 0.36, 0.42), (0.82, 0.28, 0.28)):
@@ -1085,13 +1109,15 @@ def draw_settings(
     editing: str | None,
     current_shake: str,
     current_arena: str,
+    p1_color_id: str,
+    p2_color_id: str,
 ) -> dict[str, pygame.Rect]:
     """Compact settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill(INDIGO + (210,))
     surface.blit(overlay, (0, 0))
 
-    panel_w, panel_h = _s(680), _s(680)
+    panel_w, panel_h = _s(680), _s(780)
     panel = pygame.Rect((WIDTH - panel_w) // 2, (HEIGHT - panel_h) // 2, panel_w, panel_h)
     pygame.draw.rect(surface, CELADON, panel, border_radius=_s(16))
     pygame.draw.rect(surface, INDIGO, panel, width=_s(3), border_radius=_s(16))
@@ -1155,6 +1181,31 @@ def draw_settings(
     )
 
     row_y += label_h + btn_h + section_gap
+    section_label("Цвета игроков (клик по кружку)", row_y)
+    swatch_r = _s(18)
+    swatch_gap = _s(14)
+    row_h = swatch_r * 2 + _s(6)
+    swatches_row_w = 5 * (swatch_r * 2) + 4 * swatch_gap
+    for row_idx, (label, cur_id, key_prefix) in enumerate((
+        ("P1", p1_color_id, "p1color"),
+        ("P2", p2_color_id, "p2color"),
+    )):
+        y = row_y + label_h + row_idx * (row_h + _s(6))
+        lbl_img = text_font.render(label, True, INDIGO)
+        surface.blit(lbl_img, (panel.centerx - swatches_row_w // 2 - _s(46),
+                               y + row_h // 2 - lbl_img.get_height() // 2))
+        x = panel.centerx - swatches_row_w // 2 + swatch_r
+        for cid, _lbl, rgb in CHARACTER_COLORS:
+            center = (x, y + row_h // 2)
+            if cid == cur_id:
+                aa_circle(surface, INDIGO, center, swatch_r + _s(3))
+            aa_circle(surface, rgb, center, swatch_r)
+            hit = pygame.Rect(center[0] - swatch_r - _s(3), center[1] - swatch_r - _s(3),
+                              swatch_r * 2 + _s(6), swatch_r * 2 + _s(6))
+            rects[f"{key_prefix}_{cid}"] = hit
+            x += swatch_r * 2 + swatch_gap
+
+    row_y += label_h + row_h * 2 + _s(6) + section_gap
     section_label("Никнеймы (клик по полю для редактирования)", row_y)
     name_y = row_y + label_h
     name_w, name_h = _s(260), _s(44)
@@ -1411,6 +1462,8 @@ def main() -> int:
     game_over = False
     winner_msg = ""
     settings_open = False
+    in_menu = True                       # main menu shown at startup
+    menu_play_rect = pygame.Rect(0, 0, 0, 0)
     editing_name: str | None = None      # 'p1' | 'p2' | None — text-input target
     star_toast: dict | None = None       # {'name': str, 'kind': 'game' | 'match'}
     awaiting_continue: bool = False      # after a star, wait for A/Space before swapping sides + serving
@@ -1427,6 +1480,14 @@ def main() -> int:
     current_arena = prefs.get("arena", ARENA_BEACH)
     if current_arena not in ARENAS: current_arena = ARENA_BEACH
     render_background(background, current_arena)
+
+    color_ids = {cid for cid, *_ in CHARACTER_COLORS}
+    p1_color_id = prefs.get("p1_color", "seagrass")
+    p2_color_id = prefs.get("p2_color", "cerulean")
+    if p1_color_id not in color_ids: p1_color_id = "seagrass"
+    if p2_color_id not in color_ids: p2_color_id = "cerulean"
+    p1.slime.color = _color_by_id(p1_color_id, P1_COLOR)
+    p2.slime.color = _color_by_id(p2_color_id, P2_COLOR)
     global _muted
     _muted = bool(prefs.get("muted", False))
     ai_state = AIState()
@@ -1441,6 +1502,7 @@ def main() -> int:
             "input_mode": input_mode, "game_mode": game_mode,
             "ai_difficulty": ai_difficulty, "muted": _muted,
             "shake": shake_preset, "arena": current_arena,
+            "p1_color": p1_color_id, "p2_color": p2_color_id,
         })
 
     # Hit-stop is a module-level counter we mutate from the main loop
@@ -1457,7 +1519,9 @@ def main() -> int:
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
-                if settings_open:
+                if in_menu and menu_play_rect.collidepoint(mx, my):
+                    in_menu = False
+                elif settings_open:
                     clicked_field = False
                     for key, rect in settings_rects.items():
                         if rect.collidepoint(mx, my):
@@ -1478,6 +1542,15 @@ def main() -> int:
                             elif key in ARENAS:
                                 current_arena = key
                                 render_background(background, current_arena)
+                                _save_prefs()
+                            elif key.startswith("p1color_") or key.startswith("p2color_"):
+                                who, cid = key.split("_", 1)
+                                if who == "p1color":
+                                    p1_color_id = cid
+                                    p1.slime.color = _color_by_id(cid, P1_COLOR)
+                                else:
+                                    p2_color_id = cid
+                                    p2.slime.color = _color_by_id(cid, P2_COLOR)
                                 _save_prefs()
                             elif key in ("edit_p1", "edit_p2"):
                                 if editing_name:
@@ -1525,6 +1598,8 @@ def main() -> int:
                     paused = not paused
                 elif event.key == pygame.K_m:
                     sfx_toggle_mute(); _save_prefs()
+                elif event.key == pygame.K_SPACE and in_menu:
+                    in_menu = False
                 elif event.key == pygame.K_SPACE and awaiting_continue:
                     # swap sides, serve to loser's new side
                     p1.slime, p2.slime = p2.slime, p1.slime
@@ -1543,6 +1618,9 @@ def main() -> int:
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
             elif event.type == pygame.CONTROLLERBUTTONDOWN:
+                if event.button == BTN_A and in_menu:
+                    in_menu = False
+                    continue
                 if event.button == BTN_A and awaiting_continue:
                     p1.slime, p2.slime = p2.slime, p1.slime
                     serve_side = 1 - serve_side
@@ -1584,7 +1662,8 @@ def main() -> int:
             _hitstop_frames -= 1
 
         if (not paused and not game_over and not settings_open
-                and _hitstop_frames == 0 and not awaiting_continue):
+                and _hitstop_frames == 0 and not awaiting_continue
+                and not in_menu):
             # Serve delay
             if ball.frozen and pygame.time.get_ticks() >= serve_timer:
                 ball.frozen = False
@@ -1654,7 +1733,26 @@ def main() -> int:
         if star_toast is not None:
             draw_star_toast(world, star_toast, msg_font, text_font)
 
-        if paused:
+        if in_menu:
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill(INDIGO + (180,))
+            world.blit(overlay, (0, 0))
+            title_img = title_font.render("BEACH SLIME VOLLEYBALL", True, GOLD)
+            world.blit(title_img,
+                       ((WIDTH - title_img.get_width()) // 2, HEIGHT // 2 - _s(120)))
+            play_w, play_h = _s(280), _s(72)
+            menu_play_rect = pygame.Rect((WIDTH - play_w) // 2, HEIGHT // 2 - _s(20),
+                                         play_w, play_h)
+            pygame.draw.rect(world, GOLD, menu_play_rect, border_radius=_s(12))
+            pygame.draw.rect(world, INDIGO, menu_play_rect, width=_s(3), border_radius=_s(12))
+            play_img = msg_font.render("Играть", True, INDIGO)
+            world.blit(play_img,
+                       (menu_play_rect.centerx - play_img.get_width() // 2,
+                        menu_play_rect.centery - play_img.get_height() // 2))
+            hint = text_font.render("A на геймпаде / ПРОБЕЛ на клавиатуре", True, GOLD)
+            world.blit(hint,
+                       ((WIDTH - hint.get_width()) // 2, menu_play_rect.bottom + _s(20)))
+        elif paused:
             draw_message(world, msg_font, ["PAUSED", "Press P to resume"])
         elif game_over:
             draw_message(world, msg_font, [winner_msg, "Enter / Start — заново"])
@@ -1664,6 +1762,7 @@ def main() -> int:
                 world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
                 p1.name, p2.name, editing_name, shake_preset, current_arena,
+                p1_color_id, p2_color_id,
             )
         else:
             settings_rects = {}
