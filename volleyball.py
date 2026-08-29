@@ -77,6 +77,14 @@ _arms_enabled = True                    # toggled from settings (persisted)
 def set_arms_enabled(v: bool) -> None:
     global _arms_enabled
     _arms_enabled = bool(v)
+
+
+_ball_glow_enabled = False              # toggled from settings (persisted)
+
+
+def set_ball_glow_enabled(v: bool) -> None:
+    global _ball_glow_enabled
+    _ball_glow_enabled = bool(v)
 # Tournament ladder:
 # BALLS_PER_GAME balls per game → 1 big star,
 # STARS_PER_MATCH big stars per match → 1 small star,
@@ -487,29 +495,6 @@ _ARENA_PALETTES = {
 }
 
 
-_sun_halo_cache: dict = {}
-
-
-def _get_sun_halo(inner_r: int, color: tuple) -> pygame.Surface:
-    """Soft additive halo around a sun disc. Halo extends ~2.2× the disc radius."""
-    key = (inner_r, color)
-    cached = _sun_halo_cache.get(key)
-    if cached is not None:
-        return cached
-    outer_r = int(inner_r * 2.2)
-    size = outer_r * 2
-    surf = pygame.Surface((size, size), pygame.SRCALPHA)
-    # Fade from ~90 alpha at the disc edge down to 0 at the outer edge.
-    for i in range(outer_r, inner_r, -1):
-        t = 1.0 - (i - inner_r) / (outer_r - inner_r)   # 0 at outer, 1 at inner
-        a = int(90 * (t * t))
-        if a <= 0:
-            continue
-        pygame.draw.circle(surf, (*color, a), (outer_r, outer_r), i)
-    _sun_halo_cache[key] = surf
-    return surf
-
-
 def render_background(surface: pygame.Surface, arena: str = ARENA_BEACH) -> None:
     """Flat sky above the sand, ground below. Palette follows the arena."""
     sky, ground = _ARENA_PALETTES.get(arena, _ARENA_PALETTES[ARENA_BEACH])
@@ -543,15 +528,9 @@ def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None
             pts = [(cx - w // 2, sand_top), (cx, sand_top - h), (cx + w // 2, sand_top)]
             aa_polygon(surface, mtn, pts)
     elif arena == ARENA_JUNGLE:
-        # A tropical warm sun in the sky, with a soft additive halo around it
+        # A tropical warm sun in the sky
         sun = (0xF7, 0xE6, 0xB3)
-        sun_cx, sun_cy = int(WIDTH * 0.82), int(HEIGHT * 0.22)
-        sun_r = _s(90)
-        halo = _get_sun_halo(sun_r, sun)
-        hs = halo.get_width() // 2
-        surface.blit(halo, (sun_cx - hs, sun_cy - hs),
-                     special_flags=pygame.BLEND_RGBA_ADD)
-        aa_circle(surface, sun, (sun_cx, sun_cy), sun_r)
+        aa_circle(surface, sun, (int(WIDTH * 0.82), int(HEIGHT * 0.22)), _s(90))
     elif arena == ARENA_SPACE:
         # Star field — deterministic (seeded) so it doesn't jitter frame-to-frame
         rng = random.Random(1337)
@@ -819,7 +798,7 @@ def _bake_ball_frames() -> list:
 def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
     # Additive glow trail — older points shrink; freshness comes from size, so
     # the pre-baked glow sprite can be blitted as-is with BLEND_RGBA_ADD.
-    if ball.trail:
+    if _ball_glow_enabled and ball.trail:
         glow = _get_ball_glow()
         trail_len = len(ball.trail)
         for i, (tx, ty) in enumerate(ball.trail):
@@ -848,7 +827,7 @@ def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
         )
         frame = pygame.transform.rotate(scaled, -vel_deg)
     # Halo under the ball when it's moving — additive, sized by speed.
-    if speed_sq > 40000.0:
+    if _ball_glow_enabled and speed_sq > 40000.0:
         speed = math.sqrt(speed_sq)
         k = min(1.0, (speed - 200.0) / 700.0)   # 0 at threshold, 1 fast
         hr = int(BALL_R * (1.4 + 0.8 * k))
@@ -1367,6 +1346,7 @@ def draw_settings(
     current_tab: str,
     current_volume: str,
     arms_on: bool,
+    ball_glow_on: bool,
 ) -> dict[str, pygame.Rect]:
     """Tabbed settings overlay. Returns clickable rects keyed by action."""
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1450,6 +1430,14 @@ def draw_settings(
             [(SHAKE_STRONG, "Сильно"), (SHAKE_MEDIUM, "Средне"),
              (SHAKE_WEAK, "Слабо"), (SHAKE_OFF, "Выкл")],
             current_shake, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
+        )
+        row_y += label_h + btn_h + section_gap
+        section_label("Свечение мяча", row_y)
+        _draw_button_row(
+            surface, text_font,
+            [("glow_on", "Вкл"), ("glow_off", "Выкл")],
+            "glow_on" if ball_glow_on else "glow_off",
+            row_y + label_h, btn_w_std, btn_h, panel.centerx, rects,
         )
         row_y += label_h + btn_h + section_gap
         section_label("Громкость (M — быстрое переключение)", row_y)
@@ -1852,6 +1840,8 @@ def main() -> int:
 
     arms_on = bool(prefs.get("arms", True))
     set_arms_enabled(arms_on)
+    ball_glow_on = bool(prefs.get("ball_glow", False))
+    set_ball_glow_enabled(ball_glow_on)
     color_ids = {cid for cid, *_ in CHARACTER_COLORS}
     p1_color_id = prefs.get("p1_color", "seagrass")
     p2_color_id = prefs.get("p2_color", "cerulean")
@@ -1878,6 +1868,7 @@ def main() -> int:
             "shake": shake_preset, "arena": current_arena,
             "p1_color": p1_color_id, "p2_color": p2_color_id,
             "arms": arms_on,
+            "ball_glow": ball_glow_on,
         })
 
     # Hit-stop is a module-level counter we mutate from the main loop
@@ -1927,6 +1918,10 @@ def main() -> int:
                             elif key in ("arms_on", "arms_off"):
                                 arms_on = (key == "arms_on")
                                 set_arms_enabled(arms_on)
+                                _save_prefs()
+                            elif key in ("glow_on", "glow_off"):
+                                ball_glow_on = (key == "glow_on")
+                                set_ball_glow_enabled(ball_glow_on)
                                 _save_prefs()
                             elif key.startswith("p1color_") or key.startswith("p2color_"):
                                 who, cid = key.split("_", 1)
@@ -2151,6 +2146,7 @@ def main() -> int:
                 input_mode, game_mode, ai_difficulty, len(controllers),
                 p1.name, p2.name, editing_name, shake_preset, current_arena,
                 p1_color_id, p2_color_id, settings_tab, volume_preset, arms_on,
+                ball_glow_on,
             )
         else:
             settings_rects = {}
