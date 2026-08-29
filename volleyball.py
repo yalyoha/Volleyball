@@ -735,7 +735,8 @@ def draw_star_hud(surface: pygame.Surface, p1: Player, p2: Player) -> None:
 
 
 def point_status(player: Player) -> str | None:
-    """Announcer text if `player` is one rally from winning game/set/match."""
+    """Announcer text if `player` is one rally from winning set or match.
+    Per-game point is intentionally silent — it triggers too often to feel special."""
     if player.balls != BALLS_PER_GAME - 1:
         return None
     if (player.match_stars == STARS_PER_TOURNAMENT - 1
@@ -743,7 +744,7 @@ def point_status(player: Player) -> str | None:
         return "МАТЧ-ПОИНТ"
     if player.game_stars == STARS_PER_MATCH - 1:
         return "СЕТ-ПОИНТ"
-    return "ГЕЙМ-ПОИНТ"
+    return None
 
 
 def draw_point_hints(surface: pygame.Surface, p1: Player, p2: Player,
@@ -846,7 +847,7 @@ SHAKE_CAP = None    # computed in _init_shake_cap once _s is available at call t
 
 def add_shake(amount: float) -> None:
     global _shake
-    _shake = min(_s(22), max(_shake, amount))
+    _shake = min(_s(11), max(_shake, amount))
 
 
 def update_shake(dt: float) -> None:
@@ -898,6 +899,24 @@ def _square(f):      return lambda t: 1.0 if math.sin(2 * math.pi * f * t) >= 0 
 def _noise():        return lambda t: random.random() * 2 - 1
 
 
+def _make_land_pcm() -> bytes:
+    """Muffled sand-landing thud: low sine + heavily low-passed noise, slow decay."""
+    n = int(SFX_SAMPLE_RATE * 0.18)
+    out = array.array("h", [0] * n)
+    y_lpf = 0.0
+    for i in range(n):
+        t = i / SFX_SAMPLE_RATE
+        u = i / n
+        env = math.exp(-3.5 * u)
+        # LPF noise (dull) — 1-pole with alpha 0.12 rolls off high frequencies
+        y_lpf = y_lpf * 0.88 + (random.random() * 2 - 1) * 0.12
+        low = math.sin(2 * math.pi * 90 * t)                 # thump body ~90 Hz
+        v = (y_lpf * 0.7 + low * 0.9) * env * 0.55
+        s = int(max(-1.0, min(1.0, v)) * 32767)
+        out[i] = s
+    return out.tobytes()
+
+
 def _init_sfx() -> None:
     """Set up pygame.mixer and bake all sound effects. Silent-fail on headless/no-audio."""
     global _audio_ok, SFX
@@ -910,7 +929,7 @@ def _init_sfx() -> None:
     mk = lambda b: pygame.mixer.Sound(buffer=b)
     SFX["hit"]     = mk(_synth_pcm(_sine(180),       0.09, _env_pluck, 0.8))
     SFX["wallhit"] = mk(_synth_pcm(_sine(240),       0.05, _env_exp,   0.4))
-    SFX["land"]    = mk(_synth_pcm(_noise(),         0.12, _env_exp,   0.5))
+    SFX["land"]    = mk(_make_land_pcm())
     # Jump: quick pitch sweep 200 → 480 Hz
     SFX["jump"]    = mk(_synth_pcm(
         lambda t: math.sin(2 * math.pi * (200 + 2800 * t) * t), 0.10, _env_exp, 0.45))
@@ -1159,7 +1178,7 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
         slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT)
         sfx_play("hit", volume=min(1.0, 0.35 + impact / 1200.0))
         if impact > 700.0:
-            add_shake(min(_s(22), (impact - 700.0) / 60.0))
+            add_shake(min(_s(11), (impact - 700.0) / 120.0))
 
     # Never let a slime hit place the ball on the far side of the net band —
     # otherwise the next frame's swept check has no chance to catch it and
