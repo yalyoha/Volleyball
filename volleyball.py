@@ -183,6 +183,7 @@ class Slime:
                 self.squish += min(SQUISH_CAP, max(0.0, landing_vy * SQUISH_PER_LAND_VY))
                 if landing_vy > 200.0:
                     sfx_play("land", volume=min(1.0, landing_vy / 1400.0))
+                    emit_dust(self.x, GROUND_FOOT_Y, landing_vy)
         half_w = SLIME_W / 2
         self.x = max(self.left_bound + half_w, min(self.right_bound - half_w, self.x))
 
@@ -202,10 +203,12 @@ class Ball:
     spin: float = 0.0               # visual rotation, radians
     frozen: bool = True             # true during serve delay
     prev_x: float = WIDTH * 0.25    # x at start of the current physics step (for swept net collision)
+    trail: list = field(default_factory=list)   # recent (x, y) for motion-blur trail
 
     def update(self, dt: float) -> None:
         self.prev_x = self.x
         if self.frozen:
+            self.trail.clear()
             return
         self.vy += GRAVITY * dt
         speed = math.hypot(self.vx, self.vy)
@@ -215,6 +218,13 @@ class Ball:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.spin += self.vx * dt * 0.01
+        # Record trail only when moving noticeably — no trail on slow drops
+        if speed > 200.0:
+            self.trail.append((self.x, self.y))
+            if len(self.trail) > 8:
+                self.trail.pop(0)
+        elif self.trail:
+            self.trail.pop(0)
 
 
 @dataclass
@@ -576,6 +586,16 @@ def _bake_ball_frames() -> list:
 
 
 def draw_ball(surface: pygame.Surface, ball: Ball) -> None:
+    # Motion trail behind the ball — older = smaller & more transparent
+    if ball.trail:
+        trail_len = len(ball.trail)
+        for i, (tx, ty) in enumerate(ball.trail):
+            u = (i + 1) / trail_len            # 0..1, newer → higher
+            alpha = int(70 * u)
+            r = max(1, int(BALL_R * (0.35 + 0.4 * u)))
+            surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(surf, (*BALL_LIGHT, alpha), (r, r), r)
+            surface.blit(surf, (int(tx - r), int(ty - r)))
     frames = _bake_ball_frames()
     n = len(frames)
     angle_deg = (-math.degrees(ball.spin)) % 360.0
@@ -714,6 +734,29 @@ def draw_star_hud(surface: pygame.Surface, p1: Player, p2: Player) -> None:
                        STARS_PER_MATCH, player.game_stars)
 
 
+def point_status(player: Player) -> str | None:
+    """Announcer text if `player` is one rally from winning game/set/match."""
+    if player.balls != BALLS_PER_GAME - 1:
+        return None
+    if (player.match_stars == STARS_PER_TOURNAMENT - 1
+            and player.game_stars == STARS_PER_MATCH - 1):
+        return "МАТЧ-ПОИНТ"
+    if player.game_stars == STARS_PER_MATCH - 1:
+        return "СЕТ-ПОИНТ"
+    return "ГЕЙМ-ПОИНТ"
+
+
+def draw_point_hints(surface: pygame.Surface, p1: Player, p2: Player,
+                     font: pygame.font.Font) -> None:
+    y = _s(150)
+    for cx, player in ((WIDTH * 0.25, p1), (WIDTH * 0.75, p2)):
+        hint = point_status(player)
+        if hint is None:
+            continue
+        img = font.render(hint, True, INDIGO)
+        surface.blit(img, (int(cx - img.get_width() / 2), y))
+
+
 def draw_star_toast(surface: pygame.Surface, toast: dict, big_font: pygame.font.Font,
                     small_font: pygame.font.Font) -> None:
     """Big central star + '{name}: гейм/сет!' — brief on-earn overlay.
@@ -737,6 +780,92 @@ def draw_star_toast(surface: pygame.Surface, toast: dict, big_font: pygame.font.
     img = big_font.render(text, True, INDIGO)
     img.set_alpha(alpha)
     surface.blit(img, ((WIDTH - img.get_width()) // 2, rect.bottom + _s(10)))
+
+
+# ---------- Juice: particles, screen shake, hit-stop ----------
+
+@dataclass
+class Particle:
+    x: float
+    y: float
+    vx: float
+    vy: float
+    life: float
+    max_life: float
+    size: float
+    color: tuple
+
+
+_particles: list = []
+_shake: float = 0.0
+_hitstop_frames: int = 0
+
+
+def emit_dust(x: float, y: float, strength: float) -> None:
+    """Puff of sand at (x, y). strength ≈ landing vy."""
+    n = int(min(16, max(3, strength / 100)))
+    scale = min(1.6, strength / 500)
+    for _ in range(n):
+        angle = random.uniform(-math.pi * 0.9, -math.pi * 0.1)  # upward hemisphere
+        speed = random.uniform(60, 200) * scale
+        _particles.append(Particle(
+            x=x + random.uniform(-_s(10), _s(10)),
+            y=y,
+            vx=math.cos(angle) * speed,
+            vy=math.sin(angle) * speed - random.uniform(20, 80),
+            life=random.uniform(0.35, 0.65),
+            max_life=0.65,
+            size=random.uniform(_s(2), _s(5)),
+            color=SAND,
+        ))
+
+
+def update_particles(dt: float) -> None:
+    for p in _particles:
+        p.vy += GRAVITY * dt * 0.4
+        p.x  += p.vx * dt
+        p.y  += p.vy * dt
+        p.life -= dt
+    _particles[:] = [p for p in _particles if p.life > 0]
+
+
+def draw_particles(surface: pygame.Surface) -> None:
+    for p in _particles:
+        u = p.life / p.max_life
+        alpha = max(0, min(255, int(240 * u)))
+        r = int(p.size * (0.55 + 0.45 * u))
+        if r < 1:
+            continue
+        surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+        pygame.draw.circle(surf, (*p.color, alpha), (r, r), r)
+        surface.blit(surf, (int(p.x - r), int(p.y - r)))
+
+
+SHAKE_CAP = None    # computed in _init_shake_cap once _s is available at call time
+
+
+def add_shake(amount: float) -> None:
+    global _shake
+    _shake = min(_s(22), max(_shake, amount))
+
+
+def update_shake(dt: float) -> None:
+    global _shake
+    _shake *= max(0.0, 1.0 - dt * 8.0)
+    if _shake < 0.3:
+        _shake = 0.0
+
+
+def get_shake_offset() -> tuple[int, int]:
+    if _shake <= 0.0:
+        return 0, 0
+    return (int(random.uniform(-_shake, _shake)),
+            int(random.uniform(-_shake, _shake)))
+
+
+def request_hitstop(frames: int = 4) -> None:
+    global _hitstop_frames
+    _hitstop_frames = max(_hitstop_frames, frames)
 
 
 # ---------- Procedural SFX (no assets, no numpy) ----------
@@ -1025,10 +1154,12 @@ def resolve_ball_slime(ball: Ball, slime: Slime) -> bool:
     ball.vx = (rvx + slime.vx) * BALL_HIT_BOOST + nx * boost
     ball.vy = (rvy + slime.vy) * BALL_HIT_BOOST + ny * boost
 
-    # Jelly squash + hit SFX at the moment of impact — scale with approach speed
+    # Jelly squash + hit SFX + optional screen shake at the moment of impact
     if impact > 0.0:
         slime.squish += min(SQUISH_CAP, impact * SQUISH_PER_HIT_DOT)
         sfx_play("hit", volume=min(1.0, 0.35 + impact / 1200.0))
+        if impact > 700.0:
+            add_shake(min(_s(22), (impact - 700.0) / 60.0))
 
     # Never let a slime hit place the ball on the far side of the net band —
     # otherwise the next frame's swept check has no chance to catch it and
@@ -1180,6 +1311,10 @@ def main() -> int:
     background = pygame.Surface((WIDTH, HEIGHT))
     render_background(background)
 
+    # Off-screen render target — everything draws here; then blitted to `screen`
+    # with an optional shake offset so hard hits kick the whole scene.
+    world = pygame.Surface((WIDTH, HEIGHT))
+
     # Gamepads via SDL GameController API (universal button/axis mapping)
     sdl_controller.init()
     controllers: list = []
@@ -1224,6 +1359,9 @@ def main() -> int:
             "input_mode": input_mode, "game_mode": game_mode,
             "ai_difficulty": ai_difficulty, "muted": _muted,
         })
+
+    # Hit-stop is a module-level counter we mutate from the main loop
+    global _hitstop_frames
 
     running = True
     frames_run = 0
@@ -1334,7 +1472,10 @@ def main() -> int:
 
         keys = pygame.key.get_pressed()
 
-        if not paused and not game_over and not settings_open:
+        if _hitstop_frames > 0 and not paused and not game_over and not settings_open:
+            _hitstop_frames -= 1
+
+        if not paused and not game_over and not settings_open and _hitstop_frames == 0:
             # Serve delay
             if ball.frozen and pygame.time.get_ticks() >= serve_timer:
                 ball.frozen = False
@@ -1362,6 +1503,7 @@ def main() -> int:
                 winner, loser = (p1, p2) if scored_side == 0 else (p2, p1)
                 winner.balls += 1
                 sfx_play("score", volume=0.6)
+                request_hitstop(4)
                 serve_side = 0 if scored_side == 1 else 1   # loser serves next
                 if winner.balls >= BALLS_PER_GAME:
                     winner.balls = 0
@@ -1383,37 +1525,47 @@ def main() -> int:
                     serve(ball, serve_side)
                     serve_timer = pygame.time.get_ticks() + SERVE_DELAY_MS
 
-        # ---- Draw ----
-        screen.blit(background, (0, 0))
-        draw_net(screen)
-        draw_slime(screen, p1.slime)
-        draw_slime(screen, p2.slime)
-        draw_ball(screen, ball)
-        draw_score(screen, score_font, p1.balls, p2.balls)
-        draw_star_hud(screen, p1, p2)
-        gear_rect = draw_gear_icon(screen)
+        # Juice updates run every frame regardless of hit-stop / pause
+        update_particles(dt)
+        update_shake(dt)
+
+        # ---- Draw (into off-screen world; blitted to screen with shake) ----
+        world.blit(background, (0, 0))
+        draw_net(world)
+        draw_slime(world, p1.slime)
+        draw_slime(world, p2.slime)
+        draw_particles(world)
+        draw_ball(world, ball)
+        draw_score(world, score_font, p1.balls, p2.balls)
+        draw_star_hud(world, p1, p2)
+        draw_point_hints(world, p1, p2, text_font)
+        gear_rect = draw_gear_icon(world)
 
         # On-earn star overlay (fades over the last 300 ms of its lifetime)
         if star_toast is not None:
             if pygame.time.get_ticks() >= star_toast["until_ms"]:
                 star_toast = None
             else:
-                draw_star_toast(screen, star_toast, msg_font, text_font)
+                draw_star_toast(world, star_toast, msg_font, text_font)
 
         if paused:
-            draw_message(screen, msg_font, ["PAUSED", "Press P to resume"])
+            draw_message(world, msg_font, ["PAUSED", "Press P to resume"])
         elif game_over:
-            draw_message(screen, msg_font, [winner_msg, "Enter / Start — заново"])
+            draw_message(world, msg_font, [winner_msg, "Enter / Start — заново"])
 
         if settings_open:
             settings_rects = draw_settings(
-                screen, title_font, text_font, hint_font,
+                world, title_font, text_font, hint_font,
                 input_mode, game_mode, ai_difficulty, len(controllers),
                 p1.name, p2.name, editing_name,
             )
         else:
             settings_rects = {}
 
+        ox, oy = get_shake_offset()
+        if ox or oy:
+            screen.fill(INDIGO)
+        screen.blit(world, (ox, oy))
         pygame.display.flip()
 
         frames_run += 1
