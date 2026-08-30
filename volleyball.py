@@ -514,8 +514,8 @@ def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None
         for dx, dy, r in ((-58, 6, 30), (0, -4, 40), (58, 4, 32),
                           (18, -22, 26), (-24, -18, 24)):
             aa_circle(surface, cloud, (cx + _s(dx), cy + _s(dy)), _s(r))
-        # Left cloud — slightly smaller, positioned a bit higher for variety
-        cx, cy = int(WIDTH * 0.16), int(HEIGHT * 0.14)
+        # Left cloud — slightly smaller; sits below the HUD stars so they don't overlap
+        cx, cy = int(WIDTH * 0.16), int(HEIGHT * 0.22)
         for dx, dy, r in ((-42, 4, 22), (0, -2, 30), (42, 3, 24), (12, -18, 20)):
             aa_circle(surface, cloud, (cx + _s(dx), cy + _s(dy)), _s(r))
     elif arena == ARENA_ARCTIC:
