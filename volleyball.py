@@ -482,15 +482,13 @@ def read_player_input(player: Player, controllers: list, keys, input_mode: str) 
 
 ARENA_BEACH  = "arena_beach"
 ARENA_ARCTIC = "arena_arctic"
-ARENA_JUNGLE = "arena_jungle"
 ARENA_SPACE  = "arena_space"
-ARENAS = (ARENA_BEACH, ARENA_ARCTIC, ARENA_JUNGLE, ARENA_SPACE)
+ARENAS = (ARENA_BEACH, ARENA_ARCTIC, ARENA_SPACE)
 
 # Palette per arena: (sky_color, ground_color)
 _ARENA_PALETTES = {
     ARENA_BEACH:  ((0xBC, 0xD8, 0xC1), (0xE9, 0xD9, 0x85)),   # celadon + gold
     ARENA_ARCTIC: ((0xB2, 0xD2, 0xE6), (0xEC, 0xF2, 0xF7)),   # icy blue + snow
-    ARENA_JUNGLE: ((0xF0, 0xC8, 0x82), (0x58, 0x91, 0x50)),   # sunset + moss
     ARENA_SPACE:  ((0xAA, 0x9B, 0xD2), (0x5A, 0x50, 0x82)),   # cosmic lavender
 }
 
@@ -509,7 +507,7 @@ def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None
     if arena == ARENA_BEACH:
         # Two fluffy clouds — clusters of overlapping circles
         cloud = (0xF8, 0xFB, 0xFD)
-        # Right cloud (mirrors sun position from jungle)
+        # Right cloud
         cx, cy = int(WIDTH * 0.82), int(HEIGHT * 0.22)
         for dx, dy, r in ((-58, 6, 30), (0, -4, 40), (58, 4, 32),
                           (18, -22, 26), (-24, -18, 24)):
@@ -527,10 +525,6 @@ def _draw_arena_deco(surface: pygame.Surface, arena: str, sand_top: int) -> None
             h = int(HEIGHT * h_frac)
             pts = [(cx - w // 2, sand_top), (cx, sand_top - h), (cx + w // 2, sand_top)]
             aa_polygon(surface, mtn, pts)
-    elif arena == ARENA_JUNGLE:
-        # A tropical warm sun in the sky
-        sun = (0xF7, 0xE6, 0xB3)
-        aa_circle(surface, sun, (int(WIDTH * 0.82), int(HEIGHT * 0.22)), _s(90))
     elif arena == ARENA_SPACE:
         # Star field — deterministic (seeded) so it doesn't jitter frame-to-frame
         rng = random.Random(1337)
@@ -1424,7 +1418,7 @@ def draw_settings(
         _draw_button_row(
             surface, text_font,
             [(ARENA_BEACH, "Пляж"), (ARENA_ARCTIC, "Арктика"),
-             (ARENA_JUNGLE, "Джунгли"), (ARENA_SPACE, "Космос")],
+             (ARENA_SPACE, "Космос")],
             current_arena, row_y + label_h, btn_w_sm, btn_h, panel.centerx, rects,
         )
         row_y += label_h + btn_h + section_gap
